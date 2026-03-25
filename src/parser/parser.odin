@@ -355,9 +355,17 @@ parse_node :: proc(p: ^Parser) -> (Maybe(ast.Node), Maybe(errors.Error)) {
         node := ast.Node(ast.Raw_Html{content = content, pos = tok_pos(tok2)})
         return node, nil
 
-    case .Comment, .Doctype:
+    case .Comment:
         advance_tok(p)
         return nil, nil
+
+    case .Doctype:
+        tok2 := advance_tok(p)
+        // Reconstruct the full doctype string: tok2.value already contains "!DOCTYPE html>" etc.
+        // Prepend '<' to restore the original text.
+        content := strings.concatenate({"<", tok2.value})
+        node := ast.Node(ast.Raw_Html{content = content, pos = tok_pos(tok2)})
+        return node, nil
 
     case:
         // Unknown token in node position — skip it to avoid infinite loops

@@ -3,6 +3,7 @@ package codegen
 
 import "core:testing"
 import "core:strings"
+import "../ast"
 import "../parser"
 
 @(test)
@@ -149,4 +150,21 @@ Props :: struct {
     result := generate(doc, "list")
     testing.expect(t, strings.contains(result, "row: runtime.Snippet(string)"))
     testing.expect(t, strings.contains(result, "runtime.snippet_render"))
+}
+
+@(test)
+test_gen_layout_inlining :: proc(t: ^testing.T) {
+    root_layout, _ := parser.parse(`<!DOCTYPE html><html><body>{@render children()}</body></html>`, "views/+layout.ohtml")
+    about_layout, _ := parser.parse(`<div class="about-wrapper">{@render children()}</div>`, "views/about/+layout.ohtml")
+    about_page, _ := parser.parse(`<script lang="odin">
+Props :: struct { title: string }
+</script>
+<h1>{title}</h1>`, "views/about/+page.ohtml")
+
+    layout_chain := []ast.Document{root_layout, about_layout}
+    result := generate_page(about_page, "about", layout_chain)
+
+    testing.expect(t, strings.contains(result, "<!DOCTYPE html>"), "should contain doctype from root layout")
+    testing.expect(t, strings.contains(result, "about-wrapper"), "should contain about-wrapper from nested layout")
+    testing.expect(t, strings.contains(result, "props.title"), "should contain props.title from page")
 }

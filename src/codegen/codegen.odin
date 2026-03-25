@@ -24,6 +24,9 @@ Generator :: struct {
     snippet_fields:  map[string]string,
     // indentation level
     indent:          int,
+    // When non-nil, {@render children()} emits this pre-generated content instead
+    // of the normal runtime.children_render call. Used for layout inlining.
+    layout_children_content: Maybe(string),
 }
 
 // ─── entry points ─────────────────────────────────────────────────────────────
@@ -77,8 +80,16 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
 
     // Generate nodes into body
     g.indent = 1
-    for node in doc.children {
-        gen_node(&g, node, &g.b)
+
+    // If we have a layout chain, inline layouts around the page content.
+    // layout_chain is ordered outermost to innermost.
+    // We emit: layout[0].before + layout[1].before + ... + page + ... + layout[1].after + layout[0].after
+    if layout_chain != nil && len(layout_chain) > 0 {
+        gen_layout_inlined(&g, doc.children[:], layout_chain, &g.b)
+    } else {
+        for node in doc.children {
+            gen_node(&g, node, &g.b)
+        }
     }
 
     pop_scope(&g)
@@ -650,6 +661,15 @@ gen_snippet_def :: proc(g: ^Generator, sd: ast.Snippet_Def, b: ^strings.Builder)
 
 gen_render_call :: proc(g: ^Generator, rc: ast.Render_Call, b: ^strings.Builder) {
     name := rc.name
+
+    // Layout inlining: if this is a {@render children()} and we have injected content, emit it directly.
+    if name == "children" {
+        if content, ok := g.layout_children_content.?; ok {
+            strings.write_string(b, content)
+            return
+        }
+    }
+
     g.need_runtime = true
 
     // Check if it's a children call (no args or explicit children())
@@ -997,4 +1017,52 @@ get_root_name :: proc(expr: string) -> string {
         return strings.trim_space(trimmed[:dot_idx])
     }
     return trimmed
+}
+
+// ─── layout inlining ──────────────────────────────────────────────────────────
+
+// gen_layout_inlined generates code that inlines the layout chain around the
+// page content. layout_chain is ordered outermost to innermost.
+//
+// Strategy: generate innermost content first into a string buffer, then wrap it
+// in each successive layout by setting g.layout_children_content so that
+// gen_render_call substitutes {@render children()} with the inner content.
+//
+// The result is equivalent to:
+//   layout[0] wraps (layout[1] wraps (... wraps page_content))
+gen_layout_inlined :: proc(g: ^Generator, page_nodes: []ast.Node, layout_chain: []ast.Document, b: ^strings.Builder) {
+    if len(layout_chain) == 0 {
+        gen_nodes(g, page_nodes, b)
+        return
+    }
+
+    // Step 1: Generate page content into a temp buffer
+    page_buf := strings.Builder{}
+    strings.builder_init(&page_buf)
+    gen_nodes(g, page_nodes, &page_buf)
+    inner_content := strings.to_string(page_buf)
+
+    // Step 2: Wrap with each layout from innermost to outermost
+    // We iterate the chain in reverse so that we progressively wrap inner content
+    for i := len(layout_chain) - 1; i >= 0; i -= 1 {
+        layout := layout_chain[i]
+
+        // Save previous children content state
+        old_children := g.layout_children_content
+
+        // Set the current inner content as what {@render children()} will emit
+        g.layout_children_content = inner_content
+
+        // Generate this layout into a temp buffer
+        layout_buf := strings.Builder{}
+        strings.builder_init(&layout_buf)
+        gen_nodes(g, layout.children[:], &layout_buf)
+        inner_content = strings.to_string(layout_buf)
+
+        // Restore previous state
+        g.layout_children_content = old_children
+    }
+
+    // Step 3: Write the final wrapped content
+    strings.write_string(b, inner_content)
 }

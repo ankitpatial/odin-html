@@ -189,11 +189,27 @@ parse_props_struct :: proc(lines: []string) -> ast.Props_Def {
     props.fields = make([dynamic]ast.Prop_Field)
 
     inside := false
-    for line in lines {
-        trimmed := strings.trim_space(line)
+    for raw_line in lines {
+        trimmed := strings.trim_space(raw_line)
 
         if strings.contains(trimmed, "Props :: struct") || strings.contains(trimmed, "Props::struct") {
             inside = true
+            // Check if the struct body is on the same line: Props :: struct { ... }
+            brace_open := strings.index(trimmed, "{")
+            brace_close := strings.last_index(trimmed, "}")
+            if brace_open >= 0 && brace_close > brace_open {
+                // Extract fields between { and }
+                fields_str := trimmed[brace_open+1 : brace_close]
+                // Split by comma to get individual fields
+                field_parts := strings.split(fields_str, ",")
+                defer delete(field_parts)
+                for fp in field_parts {
+                    fp_trimmed := strings.trim_space(fp)
+                    if len(fp_trimmed) == 0 { continue }
+                    parse_and_append_field(fp_trimmed, &props)
+                }
+                inside = false // done parsing inline struct
+            }
             continue
         }
 
@@ -201,56 +217,60 @@ parse_props_struct :: proc(lines: []string) -> ast.Props_Def {
         if trimmed == "{" { continue }
         if trimmed == "}" || trimmed == "}," { break }
         if len(trimmed) == 0 { continue }
-        // Skip lines that are just the closing brace with content before it
-        if trimmed == "" { continue }
 
-        // Parse field: "name: type,"
-        // Strip trailing comma
-        field_line := trimmed
-        if strings.has_suffix(field_line, ",") {
-            field_line = field_line[:len(field_line)-1]
-        }
-
-        colon_idx := strings.index(field_line, ":")
-        if colon_idx < 0 { continue }
-
-        name := strings.trim_space(field_line[:colon_idx])
-        type_expr := strings.trim_space(field_line[colon_idx+1:])
-
-        if len(name) == 0 { continue }
-
-        field := ast.Prop_Field{name = name, type_expr = type_expr}
-
-        // Detect snippet: proc(w: io.Writer) or proc(w: io.Writer, item: Type)
-        if strings.has_prefix(type_expr, "proc(") {
-            field.is_snippet = true
-            // Extract args inside proc(...)
-            paren_start := strings.index(type_expr, "(")
-            paren_end := strings.last_index(type_expr, ")")
-            if paren_start >= 0 && paren_end > paren_start {
-                args_str := type_expr[paren_start+1 : paren_end]
-                // Split by comma to find parameters
-                args := strings.split(args_str, ",")
-                defer delete(args)
-                // First arg is always w: io.Writer (the writer)
-                // If there's a second arg, that's the snippet arg type
-                if len(args) >= 2 {
-                    second_arg := strings.trim_space(args[1])
-                    // second_arg is "item: Item" — extract the type
-                    colon := strings.index(second_arg, ":")
-                    if colon >= 0 {
-                        arg_type := strings.trim_space(second_arg[colon+1:])
-                        field.snippet_arg_type = arg_type
-                    }
-                }
-                // If only 1 arg (just w: io.Writer), snippet_arg_type stays nil
-            }
-        }
-
-        append(&props.fields, field)
+        parse_and_append_field(trimmed, &props)
     }
 
     return props
+}
+
+// parse_and_append_field parses a single "name: type" field line and appends to props.fields
+parse_and_append_field :: proc(field_line: string, props: ^ast.Props_Def) {
+    // Strip trailing comma
+    fl := field_line
+    if strings.has_suffix(fl, ",") {
+        fl = fl[:len(fl)-1]
+    }
+    fl = strings.trim_space(fl)
+    if len(fl) == 0 { return }
+
+    colon_idx := strings.index(fl, ":")
+    if colon_idx < 0 { return }
+
+    name := strings.trim_space(fl[:colon_idx])
+    type_expr := strings.trim_space(fl[colon_idx+1:])
+
+    if len(name) == 0 { return }
+
+    field := ast.Prop_Field{name = name, type_expr = type_expr}
+
+    // Detect snippet: proc(w: io.Writer) or proc(w: io.Writer, item: Type)
+    if strings.has_prefix(type_expr, "proc(") {
+        field.is_snippet = true
+        // Extract args inside proc(...)
+        paren_start := strings.index(type_expr, "(")
+        paren_end := strings.last_index(type_expr, ")")
+        if paren_start >= 0 && paren_end > paren_start {
+            args_str := type_expr[paren_start+1 : paren_end]
+            // Split by comma to find parameters
+            args := strings.split(args_str, ",")
+            defer delete(args)
+            // First arg is always w: io.Writer (the writer)
+            // If there's a second arg, that's the snippet arg type
+            if len(args) >= 2 {
+                second_arg := strings.trim_space(args[1])
+                // second_arg is "item: Item" — extract the type
+                colon := strings.index(second_arg, ":")
+                if colon >= 0 {
+                    arg_type := strings.trim_space(second_arg[colon+1:])
+                    field.snippet_arg_type = arg_type
+                }
+            }
+            // If only 1 arg (just w: io.Writer), snippet_arg_type stays nil
+        }
+    }
+
+    append(&props.fields, field)
 }
 
 // ─── children ─────────────────────────────────────────────────────────────────

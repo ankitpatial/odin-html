@@ -16,8 +16,8 @@ import "components/card"
 Props :: struct {
     title: string,
     count: int,
-    children: runtime.Snippet,
-    row: runtime.Snippet_1(Item),
+    children: runtime.Children,
+    row: runtime.Snippet(Item),
 }
 </script>
 ```
@@ -34,25 +34,25 @@ Odin does not support closures. Snippet props use a `Snippet` struct from the ge
 ```odin
 // gen/runtime/snippet.odin
 
-// Snippet with no arguments (used for children)
-Snippet :: struct {
+// Children snippet (no arguments, used for child content wrapping)
+Children :: struct {
     func: proc(w: io.Writer, ctx: rawptr),
     ctx: rawptr,
 }
 
-snippet_render :: proc(w: io.Writer, s: Snippet) {
-    if s.func != nil {
-        s.func(w, s.ctx)
+children_render :: proc(w: io.Writer, c: Children) {
+    if c.func != nil {
+        c.func(w, c.ctx)
     }
 }
 
 // Typed snippet with one argument (generated per-type as needed)
-Snippet_1 :: struct($T: typeid) {
+Snippet :: struct($T: typeid) {
     func: proc(w: io.Writer, ctx: rawptr, arg: T),
     ctx: rawptr,
 }
 
-snippet_1_render :: proc($T: typeid, w: io.Writer, s: Snippet_1(T), arg: T) {
+snippet_render :: proc($T: typeid, w: io.Writer, s: Snippet(T), arg: T) {
     if s.func != nil {
         s.func(w, s.ctx, arg)
     }
@@ -60,12 +60,12 @@ snippet_1_render :: proc($T: typeid, w: io.Writer, s: Snippet_1(T), arg: T) {
 ```
 
 **Supported snippet signatures**: only two forms are supported in `.ohtml` templates:
-- `children: proc(w: io.Writer)` — zero-argument snippet, compiles to `runtime.Snippet`
-- `row: proc(w: io.Writer, item: Item)` — single-argument snippet, compiles to `runtime.Snippet_1(Item)`
+- `children: proc(w: io.Writer)` — zero-argument snippet (children), compiles to `runtime.Children`
+- `row: proc(w: io.Writer, item: Item)` — single-argument snippet, compiles to `runtime.Snippet(Item)`
 
 Snippets with 2+ arguments are a compile error. If needed, wrap multiple values in a struct.
 
-In `.ohtml` templates, users write the conceptual `proc` types. The compiler translates these to `runtime.Snippet` and `runtime.Snippet_1(T)` in generated code.
+In `.ohtml` templates, users write the conceptual `proc` types. The compiler translates these to `runtime.Snippet` and `runtime.Snippet(T)` in generated code.
 
 ### HTML Markup
 
@@ -277,14 +277,14 @@ import "gen/runtime"
 
 Props :: struct {
     title: string,
-    children: runtime.Snippet,
+    children: runtime.Children,
 }
 
 render :: proc(w: io.Writer, props: Props) {
     io.write_string(w, "<div class=\"card\"><h2>")
     runtime.html_escape(w, props.title)
     io.write_string(w, "</h2>")
-    runtime.snippet_render(w, props.children)
+    runtime.children_render(w, props.children)
     io.write_string(w, "</div>")
 }
 ```
@@ -374,7 +374,7 @@ card.render(w, card.Props{
 - All `{expression}` values are auto-escaped via `runtime.html_escape`
 - Non-string expressions are converted via `fmt.tprint` before escaping
 - `{@html expression}` writes raw, unescaped output
-- Snippet props use `runtime.Snippet` (no closures), nil-checked before invocation
+- Snippet props use `runtime.Children` / `runtime.Snippet(T)` (no closures), nil-checked before invocation
 - **Snippet lifetime**: snippets are invoked synchronously during `render` and must NOT be stored or called after `render` returns. The context `rawptr` points to stack-allocated data that becomes invalid after the enclosing `render` call completes.
 - Static HTML is collapsed into single `io.write_string` calls
 - Layout→page wiring is inlined at compile time

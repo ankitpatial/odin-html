@@ -1,0 +1,6 @@
+<script lang="odin">
+Props :: struct {
+    label: string,
+}
+</script>
+<span class="badge">{label}</span>

@@ -198,11 +198,17 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
 
             layout_docs := make([dynamic]ast.Document)
             defer delete(layout_docs)
+            // Keep layout source buffers alive until after codegen (AST slices point into them)
+            layout_src_bufs := make([dynamic][]byte)
+            defer {
+                for buf in layout_src_bufs { delete(buf) }
+                delete(layout_src_bufs)
+            }
 
             for lp in layout_chain_paths {
                 lp_bytes, lp_read_err := os.read_entire_file_from_path(lp, context.allocator)
                 if lp_read_err != nil { continue }
-                defer delete(lp_bytes)
+                append(&layout_src_bufs, lp_bytes)
                 lp_doc, lp_err := parser.parse(string(lp_bytes), lp)
                 if _, has_err := lp_err.?; !has_err {
                     append(&layout_docs, lp_doc)
@@ -490,13 +496,31 @@ path_stem :: proc(name: string) -> string {
     return name[:idx]
 }
 
+// strip_brackets removes `[` and `]` from a path segment (e.g. "[slug]" -> "slug").
+strip_brackets :: proc(segment: string) -> string {
+    return strings.trim(segment, "[]")
+}
+
+// normalize_path_brackets strips brackets from every segment of a slash-separated path.
+// e.g. "views/blog/[slug]" -> "views/blog/slug"
+normalize_path_brackets :: proc(path: string) -> string {
+    segments := strings.split(path, "/")
+    defer delete(segments)
+    for i in 0..<len(segments) {
+        segments[i] = strip_brackets(segments[i])
+    }
+    return strings.join(segments, "/")
+}
+
 // compute_out_path computes the output .odin file path.
 // rel is the relative path from src_dir, e.g. "components/card/Card.ohtml"
 // For +page.ohtml: out_dir/rel_dir/page.odin
 // For +layout.ohtml: out_dir/rel_dir/layout.odin
 // For components: out_dir/rel_dir/card.odin (lowercased stem)
+// Directory segments with [brackets] (e.g. [slug]) are normalized by stripping brackets.
 compute_out_path :: proc(out_dir: string, rel: string, file: string) -> string {
     rel_dir := path_dir(rel)
+    rel_dir = normalize_path_brackets(rel_dir)
     file_stem := strings.to_lower(path_stem(path_base(rel)))
 
     out_name: string
@@ -516,6 +540,7 @@ compute_out_path :: proc(out_dir: string, rel: string, file: string) -> string {
 
 // compute_pkg_name returns the Odin package name for a generated file.
 // It uses the last directory segment of the relative path, or the stem if at root.
+// Brackets are stripped from the segment name (e.g. [slug] -> slug).
 compute_pkg_name :: proc(rel: string) -> string {
     rel_dir := path_dir(rel)
     if rel_dir == "." {
@@ -523,8 +548,13 @@ compute_pkg_name :: proc(rel: string) -> string {
     }
     // Last segment of rel_dir
     idx := strings.last_index(rel_dir, "/")
+    last_seg: string
     if idx < 0 {
-        return strings.to_lower(rel_dir)
+        last_seg = rel_dir
+    } else {
+        last_seg = rel_dir[idx+1:]
     }
-    return strings.to_lower(rel_dir[idx+1:])
+    // Strip [brackets] from the segment (e.g. [slug] -> slug)
+    last_seg = strip_brackets(last_seg)
+    return strings.to_lower(last_seg)
 }

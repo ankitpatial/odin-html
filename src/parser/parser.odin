@@ -1,6 +1,7 @@
 // src/parser/parser.odin
 package parser
 
+import "core:fmt"
 import "core:strings"
 import "../ast"
 import "../token"
@@ -96,12 +97,14 @@ parse_script_block :: proc(p: ^Parser) -> (ast.Script_Block, Maybe(errors.Error)
     }
 
     // Parse the raw script content for imports and Props struct
-    parse_script_content(sb.raw, &sb)
+    if err := parse_script_content(sb.raw, &sb, p.file); err != nil {
+        return sb, err
+    }
 
     return sb, nil
 }
 
-parse_script_content :: proc(raw: string, sb: ^ast.Script_Block) {
+parse_script_content :: proc(raw: string, sb: ^ast.Script_Block, file: string) -> Maybe(errors.Error) {
     lines := strings.split_lines(raw)
     defer delete(lines)
 
@@ -140,13 +143,17 @@ parse_script_content :: proc(raw: string, sb: ^ast.Script_Block) {
                 i += 1
             }
             // Parse the struct fields
-            props := parse_props_struct(struct_lines[:])
+            props, err := parse_props_struct(struct_lines[:], file)
+            if err != nil {
+                return err
+            }
             sb.props = props
             continue
         }
 
         i += 1
     }
+    return nil
 }
 
 parse_import_line :: proc(line: string) -> ast.Import {
@@ -184,7 +191,7 @@ parse_import_line :: proc(line: string) -> ast.Import {
     return ast.Import{alias = alias, path = path}
 }
 
-parse_props_struct :: proc(lines: []string) -> ast.Props_Def {
+parse_props_struct :: proc(lines: []string, file: string) -> (ast.Props_Def, Maybe(errors.Error)) {
     props := ast.Props_Def{}
     props.fields = make([dynamic]ast.Prop_Field)
 
@@ -206,7 +213,9 @@ parse_props_struct :: proc(lines: []string) -> ast.Props_Def {
                 for fp in field_parts {
                     fp_trimmed := strings.trim_space(fp)
                     if len(fp_trimmed) == 0 { continue }
-                    parse_and_append_field(fp_trimmed, &props)
+                    if err := parse_and_append_field(fp_trimmed, &props, file); err != nil {
+                        return props, err
+                    }
                 }
                 inside = false // done parsing inline struct
             }
@@ -218,29 +227,32 @@ parse_props_struct :: proc(lines: []string) -> ast.Props_Def {
         if trimmed == "}" || trimmed == "}," { break }
         if len(trimmed) == 0 { continue }
 
-        parse_and_append_field(trimmed, &props)
+        if err := parse_and_append_field(trimmed, &props, file); err != nil {
+            return props, err
+        }
     }
 
-    return props
+    return props, nil
 }
 
-// parse_and_append_field parses a single "name: type" field line and appends to props.fields
-parse_and_append_field :: proc(field_line: string, props: ^ast.Props_Def) {
+// parse_and_append_field parses a single "name: type" field line and appends to props.fields.
+// Returns an error if a snippet proc has more than 2 parameters (io.Writer + 1 arg max).
+parse_and_append_field :: proc(field_line: string, props: ^ast.Props_Def, file: string) -> Maybe(errors.Error) {
     // Strip trailing comma
     fl := field_line
     if strings.has_suffix(fl, ",") {
         fl = fl[:len(fl)-1]
     }
     fl = strings.trim_space(fl)
-    if len(fl) == 0 { return }
+    if len(fl) == 0 { return nil }
 
     colon_idx := strings.index(fl, ":")
-    if colon_idx < 0 { return }
+    if colon_idx < 0 { return nil }
 
     name := strings.trim_space(fl[:colon_idx])
     type_expr := strings.trim_space(fl[colon_idx+1:])
 
-    if len(name) == 0 { return }
+    if len(name) == 0 { return nil }
 
     field := ast.Prop_Field{name = name, type_expr = type_expr}
 
@@ -257,6 +269,11 @@ parse_and_append_field :: proc(field_line: string, props: ^ast.Props_Def) {
             defer delete(args)
             // First arg is always w: io.Writer (the writer)
             // If there's a second arg, that's the snippet arg type
+            // If there are 3+ args, reject — snippets support at most 1 user arg
+            if len(args) >= 3 {
+                msg := fmt.tprintf("snippet prop %q has too many arguments: only 1 user argument is supported (got %d)", name, len(args)-1)
+                return errors.Error{file = file, line = 0, col = 0, msg = msg}
+            }
             if len(args) >= 2 {
                 second_arg := strings.trim_space(args[1])
                 // second_arg is "item: Item" — extract the type
@@ -271,7 +288,9 @@ parse_and_append_field :: proc(field_line: string, props: ^ast.Props_Def) {
     }
 
     append(&props.fields, field)
+    return nil
 }
+
 
 // ─── children ─────────────────────────────────────────────────────────────────
 
@@ -361,10 +380,8 @@ parse_node :: proc(p: ^Parser) -> (Maybe(ast.Node), Maybe(errors.Error)) {
 
     case .Doctype:
         tok2 := advance_tok(p)
-        // Reconstruct the full doctype string: tok2.value already contains "!DOCTYPE html>" etc.
-        // Prepend '<' to restore the original text.
-        content := strings.concatenate({"<", tok2.value})
-        node := ast.Node(ast.Raw_Html{content = content, pos = tok_pos(tok2)})
+        // tok2.value already contains the full doctype string (e.g. "<!DOCTYPE html>")
+        node := ast.Node(ast.Raw_Html{content = tok2.value, pos = tok_pos(tok2), is_literal = true})
         return node, nil
 
     case:

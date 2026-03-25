@@ -1,0 +1,6 @@
+<script lang="odin">
+Props :: struct {
+    title: string,
+}
+</script>
+<h1>{title}</h1>

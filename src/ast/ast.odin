@@ -62,8 +62,11 @@ Expression :: struct {
 }
 
 Raw_Html :: struct {
-    content: string,
-    pos:     token.Pos,
+    content:    string,
+    pos:        token.Pos,
+    // is_literal: true when content is a literal HTML string (e.g. DOCTYPE declaration),
+    // false when content is an Odin expression variable (e.g. from {@html my_var}).
+    is_literal: bool,
 }
 
 Attribute :: struct {

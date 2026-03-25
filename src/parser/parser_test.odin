@@ -195,3 +195,17 @@ test_parse_dynamic_attr :: proc(t: ^testing.T) {
     testing.expect(t, is_dyn, "should be Dynamic_Value")
     testing.expect_value(t, dyn.expr, "cls")
 }
+
+@(test)
+test_reject_snippet_2_args :: proc(t: ^testing.T) {
+    src := `<script lang="odin">
+Props :: struct {
+    callback: proc(w: io.Writer, a: Item, b: Other),
+}
+</script>
+<div></div>`
+    _, err := parse(src, "test.ohtml")
+    e, has_err := err.?
+    testing.expect(t, has_err, "should report error for snippet with 2+ args")
+    _ = e
+}

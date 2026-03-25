@@ -168,3 +168,24 @@ Props :: struct { title: string }
     testing.expect(t, strings.contains(result, "about-wrapper"), "should contain about-wrapper from nested layout")
     testing.expect(t, strings.contains(result, "props.title"), "should contain props.title from page")
 }
+
+@(test)
+test_whitespace_collapse :: proc(t: ^testing.T) {
+    src := `<div>
+    <span>Hello</span>
+    <span>World</span>
+</div>`
+    doc, _ := parser.parse(src, "test.ohtml")
+    result := generate(doc, "ws")
+    // Should not have excessive whitespace in the output
+    // The generated write_string calls should have collapsed whitespace
+    testing.expect(t, !strings.contains(result, `"\n    "`), "should not have raw newlines in output strings")
+}
+
+@(test)
+test_text_node_whitespace :: proc(t: ^testing.T) {
+    src := `<p>Hello  World</p>`
+    doc, _ := parser.parse(src, "test.ohtml")
+    result := generate(doc, "txt")
+    testing.expect(t, strings.contains(result, "Hello  World"), "should preserve text node whitespace")
+}

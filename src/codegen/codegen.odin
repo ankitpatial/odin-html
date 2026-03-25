@@ -27,6 +27,8 @@ Generator :: struct {
     // When non-nil, {@render children()} emits this pre-generated content instead
     // of the normal runtime.children_render call. Used for layout inlining.
     layout_children_content: Maybe(string),
+    // When true, whitespace in Text nodes is preserved exactly (inside <pre>/<code>)
+    preserve_whitespace: bool,
 }
 
 // ─── entry points ─────────────────────────────────────────────────────────────
@@ -257,14 +259,21 @@ gen_nodes :: proc(g: ^Generator, nodes: []ast.Node, b: ^strings.Builder) {
     for node in nodes {
         switch n in node {
         case ast.Text:
-            strings.write_string(&static_buf, n.content)
+            if !g.preserve_whitespace && strings.trim_space(n.content) == "" {
+                // Pure-whitespace inter-element text: collapse to nothing
+                // (omit to avoid emitting raw newlines/spaces between tags)
+            } else {
+                strings.write_string(&static_buf, n.content)
+            }
         case ast.Element:
             // Check if the entire element (attrs + children) is static BEFORE writing anything
             if are_element_static(n) {
                 // Fully static: accumulate into static_buf
                 gen_element_static_open(&static_buf, n)
                 if !n.self_close {
-                    gen_nodes_static(&static_buf, n.children[:])
+                    // Preserve whitespace inside <pre> and <code>
+                    child_preserve := g.preserve_whitespace || n.tag == "pre" || n.tag == "code"
+                    gen_nodes_static(&static_buf, n.children[:], child_preserve)
                     gen_element_close(&static_buf, n.tag)
                 }
             } else {
@@ -272,7 +281,13 @@ gen_nodes :: proc(g: ^Generator, nodes: []ast.Node, b: ^strings.Builder) {
                 flush_static(g, &static_buf, b)
                 gen_element_open_dynamic(g, n, b)
                 if !n.self_close {
+                    // Preserve whitespace inside <pre> and <code>
+                    old_preserve := g.preserve_whitespace
+                    if n.tag == "pre" || n.tag == "code" {
+                        g.preserve_whitespace = true
+                    }
                     gen_nodes(g, n.children[:], b)
+                    g.preserve_whitespace = old_preserve
                     // Close tag goes into static_buf for potential collapsing
                     gen_element_close(&static_buf, n.tag)
                 }
@@ -317,7 +332,10 @@ are_all_static :: proc(nodes: []ast.Node) -> bool {
             // static
         case ast.Element:
             if !are_element_static(n) { return false }
-        case ast.Expression, ast.Raw_Html, ast.If_Block, ast.Each_Block,
+        case ast.Raw_Html:
+            // Literal Raw_Html (e.g. DOCTYPE) is static; expression Raw_Html is not
+            if !n.is_literal { return false }
+        case ast.Expression, ast.If_Block, ast.Each_Block,
              ast.Snippet_Def, ast.Render_Call, ast.Component:
             return false
         }
@@ -364,19 +382,31 @@ gen_element_close :: proc(buf: ^strings.Builder, tag: string) {
     fmt.sbprintf(buf, "</%s>", tag)
 }
 
-// Write static content of nodes into a static buffer
-gen_nodes_static :: proc(buf: ^strings.Builder, nodes: []ast.Node) {
+// Write static content of nodes into a static buffer.
+// preserve_ws: when true, write text exactly; when false, collapse pure-whitespace text.
+gen_nodes_static :: proc(buf: ^strings.Builder, nodes: []ast.Node, preserve_ws: bool = false) {
     for node in nodes {
         switch n in node {
         case ast.Text:
-            strings.write_string(buf, n.content)
+            if !preserve_ws && strings.trim_space(n.content) == "" {
+                // Collapse pure-whitespace inter-element text
+            } else {
+                strings.write_string(buf, n.content)
+            }
         case ast.Element:
             gen_element_static_open(buf, n)
             if !n.self_close {
-                gen_nodes_static(buf, n.children[:])
+                child_preserve := preserve_ws || n.tag == "pre" || n.tag == "code"
+                gen_nodes_static(buf, n.children[:], child_preserve)
                 gen_element_close(buf, n.tag)
             }
-        case ast.Expression, ast.Raw_Html, ast.If_Block, ast.Each_Block,
+        case ast.Raw_Html:
+            // Literal Raw_Html nodes (e.g. DOCTYPE) can appear in static contexts
+            if n.is_literal {
+                strings.write_string(buf, n.content)
+            }
+            // Non-literal (expression) Raw_Html should not appear in static context
+        case ast.Expression, ast.If_Block, ast.Each_Block,
              ast.Snippet_Def, ast.Render_Call, ast.Component:
             // Should not happen in static context
         }
@@ -518,9 +548,15 @@ gen_expression :: proc(g: ^Generator, expr: ast.Expression, b: ^strings.Builder)
 
 gen_raw_html :: proc(g: ^Generator, raw: ast.Raw_Html, b: ^strings.Builder) {
     content := strings.trim_space(raw.content)
-    resolved := resolve_expr(g, content)
     write_indent(g, b)
-    fmt.sbprintf(b, "io.write_string(w, %s)\n", resolved)
+    if raw.is_literal {
+        // Literal HTML content (e.g. <!DOCTYPE html>) — emit as a quoted string literal
+        fmt.sbprintf(b, "io.write_string(w, %q)\n", content)
+    } else {
+        // Expression variable (e.g. {@html my_var}) — resolve and emit as identifier
+        resolved := resolve_expr(g, content)
+        fmt.sbprintf(b, "io.write_string(w, %s)\n", resolved)
+    }
 }
 
 // ─── if block ─────────────────────────────────────────────────────────────────

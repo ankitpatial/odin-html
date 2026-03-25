@@ -1,0 +1,10 @@
+<script lang="odin">
+Props :: struct {
+    title: string,
+    children: proc(w: io.Writer),
+}
+</script>
+<div class="card">
+    <h2>{title}</h2>
+    {@render children()}
+</div>

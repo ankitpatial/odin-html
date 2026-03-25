@@ -362,7 +362,7 @@ _card_children_render :: proc(w: io.Writer, ctx: rawptr) {
 ctx := _card_children_ctx{ name = props.user.name }
 card.render(w, card.Props{
     title = "Welcome",
-    children = runtime.Snippet{
+    children = runtime.Children{
         func = _card_children_render,
         ctx = &ctx,
     },

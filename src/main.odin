@@ -29,7 +29,7 @@ main :: proc() {
     case "generate":
         src_dir, out_dir, ok := parse_src_out_args(rest)
         if !ok {
-            fmt.eprintln("Usage: odin-templ generate <src> [-o <out>]")
+            fmt.eprintln("Usage: ohtml generate <src> [-o <out>]")
             os.exit(2)
         }
         code := cmd_generate(src_dir, out_dir)
@@ -38,14 +38,14 @@ main :: proc() {
     case "watch":
         src_dir, out_dir, ok := parse_src_out_args(rest)
         if !ok {
-            fmt.eprintln("Usage: odin-templ watch <src> [-o <out>]")
+            fmt.eprintln("Usage: ohtml watch <src> [-o <out>]")
             os.exit(2)
         }
         cmd_watch(src_dir, out_dir)
 
     case "fmt":
         if len(rest) == 0 {
-            fmt.eprintln("Usage: odin-templ fmt <src>")
+            fmt.eprintln("Usage: ohtml fmt <src>")
             os.exit(2)
         }
         src_dir := rest[0]
@@ -60,12 +60,12 @@ main :: proc() {
 }
 
 print_usage :: proc() {
-    fmt.eprintln("odin-templ v0.1.0")
+    fmt.eprintln("ohtml v0.1.0")
     fmt.eprintln("")
     fmt.eprintln("Usage:")
-    fmt.eprintln("  odin-templ generate <src> [-o <out>]")
-    fmt.eprintln("  odin-templ watch    <src> [-o <out>]")
-    fmt.eprintln("  odin-templ fmt      <src>")
+    fmt.eprintln("  ohtml generate <src> [-o <out>]")
+    fmt.eprintln("  ohtml watch    <src> [-o <out>]")
+    fmt.eprintln("  ohtml fmt      <src>")
 }
 
 // parse_src_out_args parses remaining args after the command.
@@ -100,10 +100,10 @@ parse_src_out_args :: proc(args: []string) -> (src_dir: string, out_dir: string,
 // ─── generate command ─────────────────────────────────────────────────────────
 
 cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
-    // 1. Ensure out_dir exists, then write runtime package to out_dir/runtime/
+    // 1. Ensure out_dir exists, then write runtime package to out_dir/rt/
     ensure_dir(out_dir)
     if !runtime_gen.generate(out_dir) {
-        fmt.eprintfln("error: failed to write runtime package to %s/runtime", out_dir)
+        fmt.eprintfln("error: failed to write runtime package to %s/rt", out_dir)
         return 1
     }
 
@@ -179,12 +179,15 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
         return 1
     }
 
-    // 7 & 8. Generate .odin files and write them
+    // 7 & 8. Generate .odin files and write them (skip layouts — they are inlined into pages)
+    gen_count := 0
     for file in files {
+        if is_layout_file(file) { continue }
+
         doc := docs[file]
         rel := relative_path(src_dir, file)
         out_path := compute_out_path(out_dir, rel, file)
-        pkg_name := compute_pkg_name(rel)
+        pkg_name := compute_pkg_name(rel, src_dir)
 
         // Ensure output directory exists
         out_file_dir := path_dir(out_path)
@@ -217,9 +220,10 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
 
             code = codegen.generate_page(doc, pkg_name, layout_docs[:])
         } else {
-            // Regular component or layout file — both use generate
+            // Regular component
             code = codegen.generate(doc, pkg_name)
         }
+        gen_count += 1
 
         write_err := os.write_entire_file(out_path, transmute([]byte)code)
         if write_err != nil {
@@ -230,7 +234,7 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
         fmt.printfln("  wrote %s", out_path)
     }
 
-    fmt.printfln("Generated %d file(s) into %s", len(files), out_dir)
+    fmt.printfln("Generated %d file(s) into %s", gen_count, out_dir)
     return 0
 }
 
@@ -515,7 +519,7 @@ normalize_path_brackets :: proc(path: string) -> string {
 // compute_out_path computes the output .odin file path.
 // rel is the relative path from src_dir, e.g. "components/card/Card.ohtml"
 // For +page.ohtml: out_dir/rel_dir/page.odin
-// For +layout.ohtml: out_dir/rel_dir/layout.odin
+// For +layout.ohtml: skipped (inlined into pages)
 // For components: out_dir/rel_dir/card.odin (lowercased stem)
 // Directory segments with [brackets] (e.g. [slug]) are normalized by stripping brackets.
 compute_out_path :: proc(out_dir: string, rel: string, file: string) -> string {
@@ -539,12 +543,18 @@ compute_out_path :: proc(out_dir: string, rel: string, file: string) -> string {
 }
 
 // compute_pkg_name returns the Odin package name for a generated file.
-// It uses the last directory segment of the relative path, or the stem if at root.
+// It uses the last directory segment of the relative path.
+// For root-level +page.ohtml, uses the src_dir base name.
 // Brackets are stripped from the segment name (e.g. [slug] -> slug).
-compute_pkg_name :: proc(rel: string) -> string {
+compute_pkg_name :: proc(rel: string, src_dir: string) -> string {
     rel_dir := path_dir(rel)
     if rel_dir == "." {
-        return strings.to_lower(path_stem(path_base(rel)))
+        // Root-level file: use the src_dir's last segment as package name
+        base := path_base(src_dir)
+        if base == "." || len(base) == 0 {
+            return "root"
+        }
+        return strings.to_lower(strip_brackets(base))
     }
     // Last segment of rel_dir
     idx := strings.last_index(rel_dir, "/")

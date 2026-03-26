@@ -28,7 +28,7 @@ Props :: struct {
     result := generate(doc, "greeting")
     testing.expect(t, strings.contains(result, "Props :: struct"))
     testing.expect(t, strings.contains(result, "render :: proc(w: io.Writer, props: Props)"))
-    testing.expect(t, strings.contains(result, "runtime.html_escape(w, props.name)"))
+    testing.expect(t, strings.contains(result, "rt.html_escape(w, props.name)"))
 }
 
 @(test)
@@ -41,7 +41,7 @@ Props :: struct {
 <span>{count}</span>`
     doc, _ := parser.parse(src, "test.ohtml")
     result := generate(doc, "counter")
-    testing.expect(t, strings.contains(result, "runtime.html_escape(w, fmt.tprint(props.count))"))
+    testing.expect(t, strings.contains(result, "rt.html_escape(w, fmt.tprint(props.count))"))
 }
 
 @(test)
@@ -63,7 +63,7 @@ Props :: struct { cls: string }
 <div class={cls}></div>`
     doc, _ := parser.parse(src, "test.ohtml")
     result := generate(doc, "dynattr")
-    testing.expect(t, strings.contains(result, "runtime.html_escape(w, props.cls)"))
+    testing.expect(t, strings.contains(result, "rt.html_escape(w, props.cls)"))
 }
 
 @(test)
@@ -133,8 +133,8 @@ Props :: struct {
 <div><h2>{title}</h2>{@render children()}</div>`
     doc, _ := parser.parse(src, "test.ohtml")
     result := generate(doc, "card")
-    testing.expect(t, strings.contains(result, "children: runtime.Children"))
-    testing.expect(t, strings.contains(result, "runtime.children_render(w, props.children)"))
+    testing.expect(t, strings.contains(result, "children: rt.Children"))
+    testing.expect(t, strings.contains(result, "rt.children_render(w, props.children)"))
 }
 
 @(test)
@@ -148,8 +148,8 @@ Props :: struct {
 {#each items as item}{@render row(item)}{/each}`
     doc, _ := parser.parse(src, "test.ohtml")
     result := generate(doc, "list")
-    testing.expect(t, strings.contains(result, "row: runtime.Snippet(string)"))
-    testing.expect(t, strings.contains(result, "runtime.snippet_render"))
+    testing.expect(t, strings.contains(result, "row: rt.Snippet(string)"))
+    testing.expect(t, strings.contains(result, "rt.snippet_render"))
 }
 
 @(test)

@@ -1,0 +1,22 @@
+<script lang="odin">
+Product :: struct {
+    name: string,
+    slug: string,
+}
+
+Props :: struct {
+    title: string,
+    products: []Product,
+    item: proc(w: io.Writer, p: Product),
+}
+</script>
+<section class="product-grid">
+    <h2>{title}</h2>
+    <div class="product-grid__items">
+        {#each products as p}
+            {@render item(p)}
+        {:else}
+            <p class="empty">No products found.</p>
+        {/each}
+    </div>
+</section>

@@ -1,0 +1,4 @@
+<script lang="odin">
+import "nonexistent/pkg"
+</script>
+<nonexistent.Foo />

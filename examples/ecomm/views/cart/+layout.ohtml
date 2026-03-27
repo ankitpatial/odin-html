@@ -1,0 +1,4 @@
+<div class="cart-wrapper">
+    <h1>Your Cart</h1>
+    {@render children()}
+</div>

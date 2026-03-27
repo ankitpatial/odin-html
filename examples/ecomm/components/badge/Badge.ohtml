@@ -1,0 +1,7 @@
+<script lang="odin">
+Props :: struct {
+    label: string,
+    variant: string,
+}
+</script>
+<span class={variant}>{label}</span>

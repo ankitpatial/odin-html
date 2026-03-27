@@ -1,0 +1,20 @@
+<script lang="odin">
+import "../../components/product_grid"
+import "../../components/badge"
+
+Props :: struct {
+    category: string,
+    products: []product_grid.Product,
+}
+</script>
+<h1>{category}</h1>
+<product_grid.ProductGrid title={category} products={products}>
+    {#snippet item(p: product_grid.Product)}
+        <div class="product-tile">
+            <a href={p.slug}>
+                <h3>{p.name}</h3>
+            </a>
+            <badge.Badge label="View" variant="badge--link" />
+        </div>
+    {/snippet}
+</product_grid.ProductGrid>

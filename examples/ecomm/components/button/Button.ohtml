@@ -1,0 +1,8 @@
+<script lang="odin">
+Props :: struct {
+    kind: string,
+    disabled: bool,
+    children: proc(w: io.Writer),
+}
+</script>
+<button class={kind} disabled={disabled}>{@render children()}</button>

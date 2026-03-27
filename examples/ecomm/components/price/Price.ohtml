@@ -1,0 +1,15 @@
+<script lang="odin">
+import "core:fmt"
+
+Props :: struct {
+    amount: f64,
+    sale_amount: f64,
+    on_sale: bool,
+}
+</script>
+{#if on_sale}
+    <span class="price--old">${fmt.tprintf("%.2f", amount)}</span>
+    <span class="price--sale">${fmt.tprintf("%.2f", sale_amount)}</span>
+{:else}
+    <span class="price">${fmt.tprintf("%.2f", amount)}</span>
+{/if}

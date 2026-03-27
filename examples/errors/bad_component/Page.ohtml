@@ -1,0 +1,4 @@
+<script lang="odin">
+import "components/nonexistent"
+</script>
+<nonexistent.Foo />

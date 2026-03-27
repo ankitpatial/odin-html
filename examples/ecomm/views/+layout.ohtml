@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Odin Shop</title>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav__logo">Odin Shop</a>
+        <a href="/products">Products</a>
+        <a href="/cart">Cart</a>
+        <a href="/about">About</a>
+    </nav>
+    <main>{@render children()}</main>
+    <footer><p>Odin Shop - Built with ohtml</p></footer>
+</body>
+</html>

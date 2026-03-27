@@ -1,0 +1,42 @@
+<script lang="odin">
+import "../components/product_card"
+
+Product :: struct {
+    name: string,
+    slug: string,
+    image_url: string,
+    amount: f64,
+    sale_amount: f64,
+    on_sale: bool,
+    is_new: bool,
+    in_stock: bool,
+}
+
+Props :: struct {
+    hero_title: string,
+    featured: []Product,
+}
+</script>
+<section class="hero">
+    <h1>{hero_title}</h1>
+    <p>Handcrafted goods, zero-overhead templates.</p>
+</section>
+<section class="featured">
+    <h2>Featured Products</h2>
+    <div class="grid">
+        {#each featured as product}
+            <product_card.ProductCard
+                name={product.name}
+                slug={product.slug}
+                image_url={product.image_url}
+                amount={product.amount}
+                sale_amount={product.sale_amount}
+                on_sale={product.on_sale}
+                is_new={product.is_new}
+                in_stock={product.in_stock}
+            />
+        {:else}
+            <p>No featured products right now.</p>
+        {/each}
+    </div>
+</section>

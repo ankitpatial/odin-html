@@ -1,0 +1,47 @@
+<script lang="odin">
+import "core:fmt"
+import "../../components/button"
+
+Cart_Item :: struct {
+    name: string,
+    qty: int,
+    price: f64,
+}
+
+Props :: struct {
+    items: []Cart_Item,
+    total: f64,
+}
+</script>
+<table class="cart-table">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Product</th>
+            <th>Qty</th>
+            <th>Price</th>
+        </tr>
+    </thead>
+    <tbody>
+        {#each items as item, i}
+            <tr>
+                <td>{i + 1}</td>
+                <td>{item.name}</td>
+                <td>{item.qty}</td>
+                <td>${fmt.tprintf("%.2f", item.price)}</td>
+            </tr>
+        {:else}
+            <tr>
+                <td colspan="4">Your cart is empty.</td>
+            </tr>
+        {/each}
+    </tbody>
+</table>
+{#if len(items) > 0}
+    <div class="cart-footer">
+        <strong>Total: ${fmt.tprintf("%.2f", total)}</strong>
+        <button.Button kind="btn--checkout" disabled={false}>
+            <span>Checkout</span>
+        </button.Button>
+    </div>
+{/if}

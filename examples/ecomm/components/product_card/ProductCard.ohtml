@@ -1,0 +1,34 @@
+<script lang="odin">
+import "components/badge"
+import "components/price"
+
+Props :: struct {
+    name: string,
+    slug: string,
+    image_url: string,
+    amount: f64,
+    sale_amount: f64,
+    on_sale: bool,
+    is_new: bool,
+    in_stock: bool,
+    children: proc(w: io.Writer),
+}
+</script>
+<div class="product-card">
+    <a href={slug}>
+        <img src={image_url} alt={name} />
+    </a>
+    <div class="product-card__body">
+        <h3>{name}</h3>
+        {#if on_sale}
+            <badge.Badge label="Sale" variant="badge--sale" />
+        {:else if is_new}
+            <badge.Badge label="New" variant="badge--new" />
+        {/if}
+        <price.Price amount={amount} sale_amount={sale_amount} on_sale={on_sale} />
+        {#if !in_stock}
+            <span class="out-of-stock">Out of Stock</span>
+        {/if}
+        {@render children()}
+    </div>
+</div>

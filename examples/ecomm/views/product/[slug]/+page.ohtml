@@ -1,0 +1,31 @@
+<script lang="odin">
+import "../../../components/price"
+import "../../../components/button"
+
+Props :: struct {
+    name: string,
+    description_html: string,
+    image_url: string,
+    amount: f64,
+    sale_amount: f64,
+    on_sale: bool,
+    in_stock: bool,
+}
+</script>
+<article class="product-detail">
+    <img src={image_url} alt={name} class="product-detail__image" />
+    <div class="product-detail__info">
+        <h1>{name}</h1>
+        <price.Price amount={amount} sale_amount={sale_amount} on_sale={on_sale} />
+        <div class="product-detail__description">
+            {@html description_html}
+        </div>
+        <button.Button kind="btn--primary" disabled={!in_stock}>
+            {#if in_stock}
+                <span>Add to Cart</span>
+            {:else}
+                <span>Sold Out</span>
+            {/if}
+        </button.Button>
+    </div>
+</article>

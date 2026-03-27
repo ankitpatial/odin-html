@@ -1,0 +1,11 @@
+<script lang="odin">
+Props :: struct {
+    story_html: string,
+}
+</script>
+<section class="about">
+    <h1>About Odin Shop</h1>
+    <div class="about__story">
+        {@html story_html}
+    </div>
+</section>

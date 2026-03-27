@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "WebSearch",
+      "WebFetch(domain:odin-lang.org)",
+      "WebFetch(domain:pkg.odin-lang.org)",
+      "Bash(git checkout:*)",
+      "Bash(odin build:*)",
+      "Bash(odin version:*)",
+      "Bash(odin test:*)",
+      "Bash(odin doc:*)",
+      "Bash(odin root:*)",
+      "Bash(grep -rn make_directoryb /opt/homebrew/Cellar/odin/2026-03/libexec/core/os/*.odin)",
+      "Bash(./odin-templ generate:*)",
+      "Bash(xxd /Users/ankitpatial/projects/github.com/ankitpatial/odin-templ/testdata/simple/hello/Hello.ohtml)",
+      "Bash(./odin-templ)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(./odin-templ fmt:*)",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(git stash:*)",
+      "Bash(git log:*)",
+      "Bash(./ohtml generate:*)"
+    ]
+  }
+}

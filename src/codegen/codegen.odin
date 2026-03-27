@@ -29,21 +29,24 @@ Generator :: struct {
     layout_children_content: Maybe(string),
     // When true, whitespace in Text nodes is preserved exactly (inside <pre>/<code>)
     preserve_whitespace: bool,
+    // Prefix for props references ("props" in render body, "ctx" in component children)
+    props_prefix: string,
 }
 
 // ─── entry points ─────────────────────────────────────────────────────────────
 
-generate :: proc(doc: ast.Document, pkg_name: string) -> string {
-    return generate_page(doc, pkg_name, nil)
+generate :: proc(doc: ast.Document, pkg_name: string, rt_import: string = "rt") -> string {
+    return generate_page(doc, pkg_name, nil, nil, rt_import)
 }
 
-generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.Document) -> string {
+generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.Document, route_params: []string = nil, rt_import: string = "rt") -> string {
     g := Generator{}
     strings.builder_init(&g.b)
     strings.builder_init(&g.preamble)
     g.scopes = make([dynamic]map[string]bool)
     g.props_fields = make(map[string]string)
     g.snippet_fields = make(map[string]string)
+    g.props_prefix = "props"
 
     // Build props_fields and snippet_fields lookup
     if script, ok := doc.script.?; ok {
@@ -77,8 +80,13 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
         }
     }
 
-    // Push global scope (no local vars at top level)
+    // Push global scope — add route params so they resolve bare (not props.)
     push_scope(&g)
+    if route_params != nil {
+        for rp in route_params {
+            add_to_scope(&g, rp)
+        }
+    }
 
     // Generate nodes into body
     g.indent = 1
@@ -112,13 +120,16 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
         strings.write_string(&out, "\n")
     }
     if g.need_rt {
-        strings.write_string(&out, `import rt "gen/rt"`)
+        fmt.sbprintf(&out, "import \"%s\"", rt_import)
         strings.write_string(&out, "\n")
     }
 
-    // User imports from script block
+    // User imports from script block (skip codegen-managed ones)
     if script, ok := doc.script.?; ok {
         for imp in script.imports {
+            if imp.path == "core:io" || imp.path == "core:fmt" {
+                continue
+            }
             if alias, ok2 := imp.alias.?; ok2 {
                 fmt.sbprintf(&out, "import %s \"%s\"\n", alias, imp.path)
             } else {
@@ -128,6 +139,15 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
     }
 
     strings.write_string(&out, "\n")
+
+    // Extra type definitions from script (e.g. custom structs used by Props)
+    if script, ok := doc.script.?; ok {
+        extra := extract_extra_defs(script.raw)
+        if len(extra) > 0 {
+            strings.write_string(&out, extra)
+            strings.write_string(&out, "\n\n")
+        }
+    }
 
     // Props struct (rewritten with runtime types)
     if script, ok := doc.script.?; ok {
@@ -156,11 +176,16 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
     }
 
     // render proc signature
-    if has_props {
-        strings.write_string(&out, "render :: proc(w: io.Writer, props: Props) {\n")
-    } else {
-        strings.write_string(&out, "render :: proc(w: io.Writer) {\n")
+    strings.write_string(&out, "render :: proc(w: io.Writer")
+    if route_params != nil {
+        for rp in route_params {
+            fmt.sbprintf(&out, ", %s: string", rp)
+        }
     }
+    if has_props {
+        strings.write_string(&out, ", props: Props")
+    }
+    strings.write_string(&out, ") {\n")
 
     // Body
     strings.write_string(&out, strings.to_string(g.b))
@@ -209,26 +234,120 @@ write_indent :: proc(g: ^Generator, b: ^strings.Builder) {
     }
 }
 
+// ─── identifier helpers ──────────────────────────────────────────────────────
+
+is_ident_start :: proc(c: u8) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+is_ident_char :: proc(c: u8) -> bool {
+    return is_ident_start(c) || (c >= '0' && c <= '9')
+}
+
+is_odin_keyword :: proc(ident: string) -> bool {
+    switch ident {
+    case "true", "false", "nil":
+        return true
+    }
+    return false
+}
+
 // ─── resolve expression name ──────────────────────────────────────────────────
 
-// Given an expression like "name" or "item.name" or "props.foo",
-// determine if the root identifier is in local scope or a props field,
-// and return the properly prefixed expression.
+// Walk an expression string, find identifiers, and prefix props references
+// with g.props_prefix (normally "props", or "ctx" in component children).
+// Handles literals, unary operators, compound expressions, and function calls.
 resolve_expr :: proc(g: ^Generator, expr: string) -> string {
     trimmed := strings.trim_space(expr)
-    // Find the root identifier (before any dot or bracket)
-    dot_idx := strings.index(trimmed, ".")
-    root := trimmed
-    if dot_idx >= 0 {
-        root = trimmed[:dot_idx]
-    }
-    root = strings.trim_space(root)
+    if len(trimmed) == 0 { return trimmed }
 
-    if is_in_scope(g, root) {
-        return trimmed
+    result := strings.Builder{}
+    strings.builder_init(&result)
+
+    i := 0
+    for i < len(trimmed) {
+        c := trimmed[i]
+
+        // Skip string literals
+        if c == '"' {
+            start := i
+            i += 1
+            for i < len(trimmed) {
+                if trimmed[i] == '\\' {
+                    i += 1
+                } else if trimmed[i] == '"' {
+                    break
+                }
+                i += 1
+            }
+            if i < len(trimmed) { i += 1 } // closing quote
+            strings.write_string(&result, trimmed[start:i])
+            continue
+        }
+
+        // Numeric literals
+        if c >= '0' && c <= '9' {
+            start := i
+            for i < len(trimmed) && ((trimmed[i] >= '0' && trimmed[i] <= '9') || trimmed[i] == '.' || trimmed[i] == '_') {
+                i += 1
+            }
+            strings.write_string(&result, trimmed[start:i])
+            continue
+        }
+
+        // Identifiers (possibly dotted: fmt.tprintf, item.name)
+        if is_ident_start(c) {
+            start := i
+            for i < len(trimmed) && is_ident_char(trimmed[i]) {
+                i += 1
+            }
+            // Include dotted segments (foo.bar.baz)
+            for i < len(trimmed) && trimmed[i] == '.' && (i + 1) < len(trimmed) && is_ident_start(trimmed[i + 1]) {
+                i += 1 // skip dot
+                for i < len(trimmed) && is_ident_char(trimmed[i]) {
+                    i += 1
+                }
+            }
+            ident := trimmed[start:i]
+
+            // Check if followed by '(' — function/proc call, don't prefix
+            peek := i
+            for peek < len(trimmed) && (trimmed[peek] == ' ' || trimmed[peek] == '\t') {
+                peek += 1
+            }
+            if peek < len(trimmed) && trimmed[peek] == '(' {
+                strings.write_string(&result, ident)
+            } else {
+                strings.write_string(&result, resolve_ident(g, ident))
+            }
+            continue
+        }
+
+        // Everything else: operators, parens, brackets, whitespace
+        strings.write_byte(&result, c)
+        i += 1
     }
-    // It's a props field
-    return strings.concatenate({"props.", trimmed})
+
+    return strings.to_string(result)
+}
+
+// Resolve a single identifier (possibly dotted like item.name).
+// Keywords pass through; scope locals pass through; props fields get prefixed.
+resolve_ident :: proc(g: ^Generator, ident: string) -> string {
+    if is_odin_keyword(ident) { return ident }
+
+    dot_idx := strings.index(ident, ".")
+    root := ident
+    if dot_idx >= 0 { root = ident[:dot_idx] }
+
+    if is_in_scope(g, root) { return ident }
+
+    if root in g.props_fields {
+        return strings.concatenate({g.props_prefix, ".", ident})
+    }
+
+    // Unknown — leave as-is (package name, import, etc.)
+    return ident
 }
 
 // Get the type of a props field. Returns "" if not found.
@@ -237,6 +356,34 @@ props_field_type :: proc(g: ^Generator, name: string) -> string {
         return t
     }
     return ""
+}
+
+// Determine the effective type of an expression for rendering decisions.
+// Used by attribute codegen to choose bool/string/other rendering paths.
+expr_field_type :: proc(g: ^Generator, expr: string) -> string {
+    trimmed := strings.trim_space(expr)
+    if len(trimmed) == 0 { return "" }
+
+    // Unary negation → bool
+    if trimmed[0] == '!' { return "bool" }
+
+    // Literal booleans
+    if trimmed == "true" || trimmed == "false" { return "bool" }
+
+    // Literal number
+    if trimmed[0] >= '0' && trimmed[0] <= '9' { return "" }
+
+    // fmt.* function calls return strings
+    if strings.has_prefix(trimmed, "fmt.") { return "string" }
+
+    // Simple identifier or field access — look up root in props_fields
+    root := trimmed
+    dot_idx := strings.index(trimmed, ".")
+    if dot_idx >= 0 { root = trimmed[:dot_idx] }
+
+    if is_in_scope(g, root) { return "" }
+
+    return props_field_type(g, root)
 }
 
 // ─── HTML string collapsing ───────────────────────────────────────────────────
@@ -427,16 +574,7 @@ gen_element_open_dynamic :: proc(g: ^Generator, el: ast.Element, b: ^strings.Bui
         case ast.Static_Value:
             fmt.sbprintf(&static_prefix, " %s=\"%s\"", attr.name, v.value)
         case ast.Dynamic_Value:
-            // Determine type first
-            dv_dot_idx := strings.index(v.expr, ".")
-            dv_root := strings.trim_space(v.expr)
-            if dv_dot_idx >= 0 {
-                dv_root = strings.trim_space(v.expr[:dv_dot_idx])
-            }
-            dv_field_type := ""
-            if !is_in_scope(g, dv_root) {
-                dv_field_type = props_field_type(g, dv_root)
-            }
+            dv_field_type := expr_field_type(g, v.expr)
             dv_expr := resolve_expr(g, v.expr)
 
             if dv_field_type == "bool" {
@@ -515,23 +653,10 @@ gen_element_open_dynamic :: proc(g: ^Generator, el: ast.Element, b: ^strings.Bui
 
 gen_expression :: proc(g: ^Generator, expr: ast.Expression, b: ^strings.Builder) {
     content := strings.trim_space(expr.content)
-
-    // Resolve root name for type lookup
-    dot_idx := strings.index(content, ".")
-    root_name := content
-    if dot_idx >= 0 {
-        root_name = content[:dot_idx]
-    }
-    root_name = strings.trim_space(root_name)
-
     resolved := resolve_expr(g, content)
     g.need_rt = true
 
-    // Determine type
-    field_type := ""
-    if !is_in_scope(g, root_name) {
-        field_type = props_field_type(g, root_name)
-    }
+    field_type := expr_field_type(g, content)
 
     if field_type == "string" {
         write_indent(g, b)
@@ -666,7 +791,7 @@ gen_snippet_def :: proc(g: ^Generator, sd: ast.Snippet_Def, b: ^strings.Builder)
 
     // Generate the snippet render proc into preamble
     if len(param_type) > 0 {
-        fmt.sbprintf(&g.preamble, "%s :: proc(w: io.Writer, ctx_ptr: rawptr, arg: %s) {{\n", proc_name, param_type)
+        fmt.sbprintf(&g.preamble, "%s :: proc(w: io.Writer, ctx_ptr: rawptr, %s: %s) {{\n", proc_name, param_name, param_type)
     } else {
         fmt.sbprintf(&g.preamble, "%s :: proc(w: io.Writer, ctx_ptr: rawptr) {{\n", proc_name)
     }
@@ -747,17 +872,17 @@ gen_component :: proc(g: ^Generator, comp: ast.Component, b: ^strings.Builder) {
     pkg := strings.to_lower(comp.pkg)
     comp_lower := strings.to_lower(comp.name)
 
-    // Collect variables referenced in children for the ctx struct
-    refs := collect_var_refs(g, comp.children[:])
-
-    has_children := len(comp.children) > 0
-    // Separate snippet defs from non-snippet children
+    // Separate snippet defs from non-snippet children, filtering whitespace text
     snippet_defs: [dynamic]ast.Snippet_Def
     non_snippet_children: [dynamic]ast.Node
 
     for child in comp.children {
         if sd, ok := child.(ast.Snippet_Def); ok {
             append(&snippet_defs, sd)
+        } else if text, ok := child.(ast.Text); ok {
+            if strings.trim_space(text.content) != "" {
+                append(&non_snippet_children, child)
+            }
         } else {
             append(&non_snippet_children, child)
         }
@@ -766,10 +891,44 @@ gen_component :: proc(g: ^Generator, comp: ast.Component, b: ^strings.Builder) {
     has_non_snippet := len(non_snippet_children) > 0
     has_snippet_defs := len(snippet_defs) > 0
 
-    // Generate children render proc and ctx struct if needed
     if has_non_snippet {
         ctx_name := fmt.tprintf("_%s_%s_%d_ctx", pkg, comp_lower, idx)
         render_name := fmt.tprintf("_%s_%s_%d_render", pkg, comp_lower, idx)
+
+        // Collect variables referenced in non-snippet children for the ctx struct
+        refs := collect_var_refs(g, non_snippet_children[:])
+
+        // 1. Generate children body into temp builder with props_prefix="ctx"
+        //    Save preamble so nested component preambles can be hoisted.
+        preamble_before := strings.clone(strings.to_string(g.preamble))
+        strings.builder_reset(&g.preamble)
+
+        old_b := g.b
+        old_indent := g.indent
+        g.b = strings.Builder{}
+        strings.builder_init(&g.b)
+        g.indent = 1
+
+        old_prefix := g.props_prefix
+        g.props_prefix = "ctx"
+        push_scope(g)
+        gen_nodes(g, non_snippet_children[:], &g.b)
+        pop_scope(g)
+        g.props_prefix = old_prefix
+
+        children_body := strings.clone(strings.to_string(g.b))
+        g.b = old_b
+        g.indent = old_indent
+
+        // 2. Extract any nested preamble (from inner components) and hoist it
+        nested_preamble := strings.clone(strings.to_string(g.preamble))
+        strings.builder_reset(&g.preamble)
+
+        // 3. Reassemble preamble: previous + nested (hoisted) + this component's ctx/proc
+        strings.write_string(&g.preamble, preamble_before)
+        if len(nested_preamble) > 0 {
+            strings.write_string(&g.preamble, nested_preamble)
+        }
 
         // Ctx struct
         fmt.sbprintf(&g.preamble, "%s :: struct {{\n", ctx_name)
@@ -780,54 +939,25 @@ gen_component :: proc(g: ^Generator, comp: ast.Component, b: ^strings.Builder) {
         }
         strings.write_string(&g.preamble, "}\n\n")
 
-        // Render proc
+        // Render proc with children body
         fmt.sbprintf(&g.preamble, "%s :: proc(w: io.Writer, ctx_ptr: rawptr) {{\n", render_name)
-        fmt.sbprintf(&g.preamble, "    ctx := (^%s)(ctx_ptr)\n", ctx_name)
-
-        // Generate children body with ctx.xxx references
-        old_b := g.b
-        old_indent := g.indent
-        g.b = strings.Builder{}
-        strings.builder_init(&g.b)
-        g.indent = 1
-
-        // Temporarily modify scope to use ctx. prefix
-        push_scope(g)
-        for ref in refs {
-            add_to_scope(g, ref)  // mark as local so resolve_expr won't add props.
+        if len(refs) > 0 {
+            fmt.sbprintf(&g.preamble, "    ctx := (^%s)(ctx_ptr)\n", ctx_name)
         }
-
-        // Store refs for ctx generation
-        old_props := g.props_fields
-        ctx_props := make(map[string]string)
-        for ref in refs {
-            field_type := props_field_type(g, ref)
-            ctx_props[ref] = field_type
-        }
-        // Override: when in ctx scope, expressions referencing outer vars should use ctx.xxx
-        ctx_gen := g
-        _ = ctx_gen
-        gen_nodes_with_ctx(g, non_snippet_children[:], &g.b, refs, ctx_name)
-
-        strings.write_string(&g.preamble, strings.to_string(g.b))
-        g.b = old_b
-        g.indent = old_indent
-        pop_scope(g)
-        g.props_fields = old_props
-
+        strings.write_string(&g.preamble, children_body)
         strings.write_string(&g.preamble, "}\n\n")
 
-        // In the render body: declare ctx, call component
+        // 4. Emit call site: ctx initialization + component render call
         write_indent(g, b)
         fmt.sbprintf(b, "_ctx_%d := %s{{\n", idx, ctx_name)
         for ref in refs {
+            resolved := resolve_ident(g, ref)
             write_indent(g, b)
-            fmt.sbprintf(b, "    %s = props.%s,\n", ref, ref)
+            fmt.sbprintf(b, "    %s = %s,\n", ref, resolved)
         }
         write_indent(g, b)
         strings.write_string(b, "}\n")
 
-        // Call component render
         write_indent(g, b)
         if len(pkg) > 0 {
             fmt.sbprintf(b, "%s.render(w, %s.Props{{\n", pkg, pkg)
@@ -835,19 +965,7 @@ gen_component :: proc(g: ^Generator, comp: ast.Component, b: ^strings.Builder) {
             fmt.sbprintf(b, "render(w, Props{{\n")
         }
 
-        // Attributes
-        for attr in comp.attributes {
-            write_indent(g, b)
-            switch v in attr.value {
-            case ast.Static_Value:
-                fmt.sbprintf(b, "    %s = \"%s\",\n", attr.name, v.value)
-            case ast.Dynamic_Value:
-                expr := resolve_expr(g, v.expr)
-                fmt.sbprintf(b, "    %s = %s,\n", attr.name, expr)
-            case ast.Bool_Shorthand:
-                fmt.sbprintf(b, "    %s = true,\n", attr.name)
-            }
-        }
+        gen_component_attrs(g, comp.attributes[:], b)
 
         // Children field
         write_indent(g, b)
@@ -864,25 +982,49 @@ gen_component :: proc(g: ^Generator, comp: ast.Component, b: ^strings.Builder) {
         strings.write_string(b, "})\n")
 
     } else if has_snippet_defs {
-        // Only snippet defs as children
+        // Generate snippet render procs into preamble
+        for sd in snippet_defs {
+            render_name := fmt.tprintf("_%s_%s_%d_%s_render", pkg, comp_lower, idx, sd.name)
+            param_name := ""
+            param_type := ""
+            if pn, ok := sd.param_name.?; ok { param_name = pn }
+            if pt, ok := sd.param_type.?; ok { param_type = pt }
+
+            // Proc signature
+            if len(param_type) > 0 {
+                fmt.sbprintf(&g.preamble, "%s :: proc(w: io.Writer, ctx_ptr: rawptr, %s: %s) {{\n", render_name, param_name, param_type)
+            } else {
+                fmt.sbprintf(&g.preamble, "%s :: proc(w: io.Writer, ctx_ptr: rawptr) {{\n", render_name)
+            }
+
+            // Generate body into temp builder
+            old_b := g.b
+            old_indent := g.indent
+            g.b = strings.Builder{}
+            strings.builder_init(&g.b)
+            g.indent = 1
+
+            push_scope(g)
+            if len(param_name) > 0 {
+                add_to_scope(g, param_name)
+            }
+            gen_nodes(g, sd.children[:], &g.b)
+            pop_scope(g)
+
+            strings.write_string(&g.preamble, strings.to_string(g.b))
+            g.b = old_b
+            g.indent = old_indent
+            strings.write_string(&g.preamble, "}\n\n")
+        }
+
+        // Emit component call with snippet bindings
         write_indent(g, b)
         if len(pkg) > 0 {
             fmt.sbprintf(b, "%s.render(w, %s.Props{{\n", pkg, pkg)
         } else {
             fmt.sbprintf(b, "render(w, Props{{\n")
         }
-        for attr in comp.attributes {
-            write_indent(g, b)
-            switch v in attr.value {
-            case ast.Static_Value:
-                fmt.sbprintf(b, "    %s = \"%s\",\n", attr.name, v.value)
-            case ast.Dynamic_Value:
-                expr := resolve_expr(g, v.expr)
-                fmt.sbprintf(b, "    %s = %s,\n", attr.name, expr)
-            case ast.Bool_Shorthand:
-                fmt.sbprintf(b, "    %s = true,\n", attr.name)
-            }
-        }
+        gen_component_attrs(g, comp.attributes[:], b)
         for sd in snippet_defs {
             render_name := fmt.tprintf("_%s_%s_%d_%s_render", pkg, comp_lower, idx, sd.name)
             param_type := ""
@@ -913,60 +1055,26 @@ gen_component :: proc(g: ^Generator, comp: ast.Component, b: ^strings.Builder) {
         } else {
             fmt.sbprintf(b, "render(w, Props{{\n")
         }
-        for attr in comp.attributes {
-            write_indent(g, b)
-            switch v in attr.value {
-            case ast.Static_Value:
-                fmt.sbprintf(b, "    %s = \"%s\",\n", attr.name, v.value)
-            case ast.Dynamic_Value:
-                expr := resolve_expr(g, v.expr)
-                fmt.sbprintf(b, "    %s = %s,\n", attr.name, expr)
-            case ast.Bool_Shorthand:
-                fmt.sbprintf(b, "    %s = true,\n", attr.name)
-            }
-        }
+        gen_component_attrs(g, comp.attributes[:], b)
         write_indent(g, b)
         strings.write_string(b, "})\n")
     }
-    _ = has_children
 }
 
-// gen_nodes_with_ctx generates nodes but uses ctx.xxx for outer variable references
-gen_nodes_with_ctx :: proc(g: ^Generator, nodes: []ast.Node, b: ^strings.Builder, refs: []string, ctx_name: string) {
-    // Temporarily remap props fields that appear in refs to ctx.xxx
-    // We do this by modifying the scope: refs are already in scope (added by caller)
-    // But we need them to resolve to ctx.xxx not bare name
-    // Actually the caller did push_scope and add_to_scope for refs
-    // So resolve_expr will return bare name (not props.xxx)
-    // We need them to be ctx.xxx
-    // Approach: intercept at gen_expression level
-
-    // Save old props_fields
-    old_fields := g.props_fields
-
-    // Create a fake scope where refs map to ctx.field form
-    // We'll do this differently: remove refs from props_fields temporarily
-    // and add them to scope, then post-process to replace bare name with ctx.xxx
-
-    // Actually the cleanest approach: generate into a temp buffer,
-    // then replace bare refs with ctx.xxx
-
-    tmp := strings.Builder{}
-    strings.builder_init(&tmp)
-    gen_nodes(g, nodes, &tmp)
-    result := strings.to_string(tmp)
-
-    // Replace "props.ref" with "ctx.ref" for each ref
-    final := result
-    for ref in refs {
-        from := fmt.tprintf("props.%s", ref)
-        to := fmt.tprintf("ctx.%s", ref)
-        new_result, _ := strings.replace_all(final, from, to)
-        final = new_result
+// Emit component attribute assignments (shared by all component branches)
+gen_component_attrs :: proc(g: ^Generator, attrs: []ast.Attribute, b: ^strings.Builder) {
+    for attr in attrs {
+        write_indent(g, b)
+        switch v in attr.value {
+        case ast.Static_Value:
+            fmt.sbprintf(b, "    %s = \"%s\",\n", attr.name, v.value)
+        case ast.Dynamic_Value:
+            expr := resolve_expr(g, v.expr)
+            fmt.sbprintf(b, "    %s = %s,\n", attr.name, expr)
+        case ast.Bool_Shorthand:
+            fmt.sbprintf(b, "    %s = true,\n", attr.name)
+        }
     }
-
-    strings.write_string(b, final)
-    g.props_fields = old_fields
 }
 
 // collect_var_refs collects all top-level variable references in nodes
@@ -978,6 +1086,21 @@ collect_var_refs :: proc(g: ^Generator, nodes: []ast.Node) -> []string {
     return refs_dyn[:]
 }
 
+// Try to collect a root name as a props-field reference.
+// Skips keywords, literals, in-scope locals, and non-props identifiers.
+maybe_collect_ref :: proc(g: ^Generator, expr: string, seen: ^map[string]bool, refs: ^[dynamic]string) {
+    root := get_root_name(expr)
+    if len(root) == 0 { return }
+    if is_odin_keyword(root) { return }
+    if root[0] >= '0' && root[0] <= '9' { return } // number literal
+    if is_in_scope(g, root) { return }
+    if !(root in g.props_fields) { return } // only collect actual props
+    if !seen[root] {
+        seen[root] = true
+        append(refs, root)
+    }
+}
+
 collect_refs_recursive :: proc(g: ^Generator, nodes: []ast.Node, seen: ^map[string]bool, refs: ^[dynamic]string) {
     for node in nodes {
         switch n in node {
@@ -987,57 +1110,27 @@ collect_refs_recursive :: proc(g: ^Generator, nodes: []ast.Node, seen: ^map[stri
             for attr in n.attributes {
                 switch v in attr.value {
                 case ast.Dynamic_Value:
-                    root := get_root_name(v.expr)
-                    if !is_in_scope(g, root) && len(root) > 0 {
-                        if !seen[root] {
-                            seen[root] = true
-                            append(refs, root)
-                        }
-                    }
+                    maybe_collect_ref(g, v.expr, seen, refs)
                 case ast.Static_Value, ast.Bool_Shorthand:
                     // nothing
                 }
             }
             collect_refs_recursive(g, n.children[:], seen, refs)
         case ast.Expression:
-            root := get_root_name(n.content)
-            if !is_in_scope(g, root) && len(root) > 0 {
-                if !seen[root] {
-                    seen[root] = true
-                    append(refs, root)
-                }
-            }
+            maybe_collect_ref(g, n.content, seen, refs)
         case ast.Raw_Html:
-            root := get_root_name(n.content)
-            if !is_in_scope(g, root) && len(root) > 0 {
-                if !seen[root] {
-                    seen[root] = true
-                    append(refs, root)
-                }
-            }
+            maybe_collect_ref(g, n.content, seen, refs)
         case ast.If_Block:
-            root := get_root_name(n.condition)
-            if !is_in_scope(g, root) && len(root) > 0 {
-                if !seen[root] {
-                    seen[root] = true
-                    append(refs, root)
-                }
-            }
+            maybe_collect_ref(g, n.condition, seen, refs)
             collect_refs_recursive(g, n.children[:], seen, refs)
             if eb, ok := n.else_body.?; ok {
                 collect_refs_recursive(g, eb[:], seen, refs)
             }
         case ast.Each_Block:
-            root := get_root_name(n.iterable)
-            if !is_in_scope(g, root) && len(root) > 0 {
-                if !seen[root] {
-                    seen[root] = true
-                    append(refs, root)
-                }
-            }
+            maybe_collect_ref(g, n.iterable, seen, refs)
             collect_refs_recursive(g, n.children[:], seen, refs)
         case ast.Snippet_Def:
-            collect_refs_recursive(g, n.children[:], seen, refs)
+            // Don't recurse — snippet defs have their own scope/proc
         case ast.Render_Call:
             // nothing direct
         case ast.Component:
@@ -1048,9 +1141,17 @@ collect_refs_recursive :: proc(g: ^Generator, nodes: []ast.Node, seen: ^map[stri
 
 get_root_name :: proc(expr: string) -> string {
     trimmed := strings.trim_space(expr)
-    dot_idx := strings.index(trimmed, ".")
-    if dot_idx >= 0 {
-        return strings.trim_space(trimmed[:dot_idx])
+    // Strip leading unary operators
+    for len(trimmed) > 0 && (trimmed[0] == '!' || trimmed[0] == '-') {
+        trimmed = strings.trim_space(trimmed[1:])
+    }
+    // Extract first identifier token
+    end := 0
+    for end < len(trimmed) && is_ident_char(trimmed[end]) {
+        end += 1
+    }
+    if end > 0 {
+        return trimmed[:end]
     }
     return trimmed
 }
@@ -1101,4 +1202,48 @@ gen_layout_inlined :: proc(g: ^Generator, page_nodes: []ast.Node, layout_chain: 
 
     // Step 3: Write the final wrapped content
     strings.write_string(b, inner_content)
+}
+
+// ─── script helpers ──────────────────────────────────────────────────────────
+
+// extract_extra_defs extracts non-import, non-Props type definitions from
+// the raw script block content (e.g. custom structs used by Props fields).
+extract_extra_defs :: proc(raw: string) -> string {
+    result := strings.Builder{}
+    strings.builder_init(&result)
+    lines := strings.split(raw, "\n")
+    defer delete(lines)
+
+    i := 0
+    for i < len(lines) {
+        trimmed := strings.trim_space(lines[i])
+        // Skip import lines
+        if strings.has_prefix(trimmed, "import ") {
+            i += 1
+            continue
+        }
+        // Skip Props :: struct { ... }
+        if strings.has_prefix(trimmed, "Props :: struct") {
+            brace_depth := 0
+            for i < len(lines) {
+                for c in lines[i] {
+                    if c == '{' { brace_depth += 1 }
+                    if c == '}' { brace_depth -= 1 }
+                }
+                i += 1
+                if brace_depth <= 0 { break }
+            }
+            continue
+        }
+        // Skip blank lines at the start
+        if strings.builder_len(result) == 0 && len(trimmed) == 0 {
+            i += 1
+            continue
+        }
+        strings.write_string(&result, lines[i])
+        strings.write_string(&result, "\n")
+        i += 1
+    }
+
+    return strings.trim_space(strings.to_string(result))
 }

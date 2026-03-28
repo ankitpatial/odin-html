@@ -1,3 +1,10 @@
 .claude
 out
 /ohtml
+node_modules
+
+# Zed extension build artifacts
+editors/zed/target/
+editors/zed/grammars/
+editors/zed/extension.wasm
+editors/zed/Cargo.lock

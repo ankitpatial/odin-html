@@ -6,6 +6,10 @@ authors = ["Ankit Patial"]
 description = "Odin HTML template language support with syntax highlighting and Odin injection"
 repository = "https://github.com/ankitpatial/odin-html"
 
+[language_servers.ols]
+name = "OLS"
+language = "OHTML"
+
 [grammars.ohtml]
 repository = "file:///Users/ankitpatial/projects/github.com/ankitpatial/odin-html"
 rev = "main"

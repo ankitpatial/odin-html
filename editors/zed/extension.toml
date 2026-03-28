@@ -11,6 +11,6 @@ name = "OHTML LSP"
 language = "OHTML"
 
 [grammars.ohtml]
-repository = "file:///Users/ankitpatial/projects/github.com/ankitpatial/odin-html"
+repository = "https://github.com/ankitpatial/odin-html"
 rev = "main"
 path = "tree-sitter-ohtml"

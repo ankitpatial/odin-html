@@ -150,7 +150,7 @@ handle_did_open :: proc(server: ^Server, params: json.Value) {
 	if len(uri) == 0 {return}
 
 	log("ohtml-lsp: didOpen uri=%s", uri)
-	open_document(&server.document_store, uri, text, server.registry)
+	open_document(&server.document_store, uri, text, server.registry, server.root_path)
 	publish_diagnostics_for(server, uri)
 }
 
@@ -177,7 +177,7 @@ handle_did_change :: proc(server: ^Server, params: json.Value) {
 	text := json_object_get_string(first_change, "text")
 
 	log("ohtml-lsp: didChange uri=%s", uri)
-	update_document(&server.document_store, uri, text, server.registry)
+	update_document(&server.document_store, uri, text, server.registry, server.root_path)
 	publish_diagnostics_for(server, uri)
 }
 

@@ -1,6 +1,8 @@
 // src/lsp/document.odin
 package lsp
 
+import "core:strings"
+
 import "../ast"
 import "../errors"
 import "../parser"
@@ -27,22 +29,22 @@ make_document_store :: proc() -> Document_Store {
 }
 
 // open_document adds a document to the store, parses it, and returns any errors.
-open_document :: proc(store: ^Document_Store, uri: string, content: string, registry: resolver.Registry) {
+open_document :: proc(store: ^Document_Store, uri: string, content: string, registry: resolver.Registry, src_dir: string) {
 	doc := Document{
 		uri     = uri,
 		content = content,
 	}
-	parse_document(&doc, registry)
+	parse_document(&doc, registry, src_dir)
 	store.documents[uri] = doc
 }
 
 // update_document replaces the content of an existing document and re-parses it.
-update_document :: proc(store: ^Document_Store, uri: string, content: string, registry: resolver.Registry) {
+update_document :: proc(store: ^Document_Store, uri: string, content: string, registry: resolver.Registry, src_dir: string) {
 	doc := Document{
 		uri     = uri,
 		content = content,
 	}
-	parse_document(&doc, registry)
+	parse_document(&doc, registry, src_dir)
 	store.documents[uri] = doc
 }
 
@@ -62,7 +64,8 @@ get_document :: proc(store: ^Document_Store, uri: string) -> (^Document, bool) {
 }
 
 // parse_document parses the document content and runs the resolver.
-parse_document :: proc(doc: ^Document, registry: resolver.Registry) {
+// src_dir is the workspace root, needed to normalize relative import paths.
+parse_document :: proc(doc: ^Document, registry: resolver.Registry, src_dir: string) {
 	file_path := uri_to_path(doc.uri)
 
 	doc.parse_errors = make([dynamic]errors.Error)
@@ -75,6 +78,19 @@ parse_document :: proc(doc: ^Document, registry: resolver.Registry) {
 	}
 
 	doc.parsed = parsed
+
+	// Normalize relative import paths before resolution (same as cmd_generate)
+	if parsed_doc, ok := &doc.parsed.?; ok {
+		if script, has_script := &parsed_doc.script.?; has_script {
+			rel := lsp_relative_path(src_dir, file_path)
+			file_dir := lsp_path_dir(rel)
+			for &imp in script.imports {
+				if strings.has_prefix(imp.path, ".") {
+					imp.path = lsp_resolve_relative_path(file_dir, imp.path)
+				}
+			}
+		}
+	}
 
 	// Run resolver to check component references
 	if parsed_doc, ok := &doc.parsed.?; ok {

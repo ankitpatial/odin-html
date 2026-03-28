@@ -13,14 +13,20 @@ impl zed::Extension for OhtmlExtension {
         worktree: &zed::Worktree,
     ) -> zed::Result<zed::Command> {
         // Check user-configured path in settings
-        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
-        if let Some(binary_settings) = settings.binary.as_ref() {
-            if let Some(path) = binary_settings.path.as_ref() {
-                return Ok(zed::Command {
-                    command: path.clone(),
-                    args: vec!["lsp".to_string()],
-                    env: Default::default(),
-                });
+        if let Ok(settings) = LspSettings::for_worktree(language_server_id.as_ref(), worktree) {
+            if let Some(binary_settings) = settings.binary.as_ref() {
+                if let Some(path) = binary_settings.path.as_ref() {
+                    let args = binary_settings
+                        .arguments
+                        .as_ref()
+                        .map(|a| a.clone())
+                        .unwrap_or_else(|| vec!["lsp".to_string()]);
+                    return Ok(zed::Command {
+                        command: path.clone(),
+                        args,
+                        env: Default::default(),
+                    });
+                }
             }
         }
 
@@ -33,7 +39,13 @@ impl zed::Extension for OhtmlExtension {
             });
         }
 
-        Err("ohtml binary not found in PATH. Build it with: cd src && odin build . -out:ohtml".to_string())
+        // Fallback: assume ohtml binary is in the project root
+        let project_binary = format!("{}/ohtml", worktree.root_path());
+        Ok(zed::Command {
+            command: project_binary,
+            args: vec!["lsp".to_string()],
+            env: Default::default(),
+        })
     }
 }
 

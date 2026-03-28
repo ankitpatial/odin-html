@@ -15,6 +15,8 @@
 (quoted_attribute_value) @string
 
 ; --- Control Flow Keywords ---
+; Container nodes: Zed injection overrides keyword color on expression regions.
+; Leaf nodes (if_end, each_end): no children, safe to highlight entirely.
 (if_start) @keyword.control
 (if_end) @keyword.control
 (else_if_clause) @keyword.control

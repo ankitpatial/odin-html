@@ -18,7 +18,7 @@
     "license": "MIT",
     "description": "Tree-sitter grammar for OHTML (Odin HTML) template files",
     "links": {
-      "repository": "https://github.com/tree-sitter/tree-sitter-ohtml"
+      "repository": "https://github.com/ankitpatial/odin-html"
     }
   },
   "bindings": {

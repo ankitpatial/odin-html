@@ -25,3 +25,7 @@
 ; Each iterable -> Odin
 ((each_start (expression_content) @content)
  (#set! "language" "odin"))
+
+; Attribute shorthand -> Odin
+((attribute_shorthand (expression_content) @content)
+ (#set! "language" "odin"))

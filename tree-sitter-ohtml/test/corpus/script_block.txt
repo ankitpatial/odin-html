@@ -1,0 +1,51 @@
+===
+Script block with props
+===
+<script lang="odin">
+Props :: struct {
+    title: string,
+}
+</script>
+<div>hello</div>
+---
+
+(document
+  (script_element
+    (script_start_tag)
+    (raw_text)
+    (script_end_tag))
+  (element
+    (start_tag (tag_name))
+    (text)
+    (end_tag (tag_name))))
+
+===
+Document without script block
+===
+<div>hello</div>
+---
+
+(document
+  (element
+    (start_tag (tag_name))
+    (text)
+    (end_tag (tag_name))))
+
+===
+Script block with imports
+===
+<script lang="odin">
+import "components/badge"
+import card "components/card"
+
+Props :: struct {
+    name: string,
+}
+</script>
+---
+
+(document
+  (script_element
+    (script_start_tag)
+    (raw_text)
+    (script_end_tag)))

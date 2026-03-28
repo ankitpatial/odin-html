@@ -13,44 +13,188 @@ COMPLETION_KIND_CLASS    :: 7
 COMPLETION_KIND_PROPERTY :: 10
 COMPLETION_KIND_SNIPPET  :: 15
 
+// Completion context determined from cursor position
+Completion_Context :: enum {
+	Content,             // Between tags — show HTML tags, components, block keywords
+	Tag_Open,            // After < — show HTML tag names, component names
+	Attribute,           // Inside a tag after name — show HTML attributes
+	Component_Attribute, // Inside a component tag — show props + HTML attributes
+	Expression,          // Inside { } — minimal/no completions
+	Script,              // Inside <script> — no completions
+}
+
+Completion_Context_Info :: struct {
+	kind:           Completion_Context,
+	component_pkg:  string, // set if kind == .Component_Attribute
+	component_name: string, // set if kind == .Component_Attribute
+}
+
 // handle_completion handles textDocument/completion requests.
 handle_completion :: proc(server: ^Server, id: json.Value, params: json.Value) {
 	items := json.Array{}
 
-	// 1. Component completions from registry
-	for pkg_path, names in server.registry.components {
-		pkg_name := lsp_path_base(pkg_path)
-		for name, _ in names {
-			label := strings.concatenate({pkg_name, ".", name})
-			detail := strings.concatenate({"Component from ", pkg_path})
+	// Extract cursor position and document, determine context
+	ctx := get_completion_context(server, params)
 
-			item := json.Object{}
-			item["label"] = json.Value(label)
-			item["kind"] = json.Value(i64(COMPLETION_KIND_CLASS))
-			item["detail"] = json.Value(detail)
-			append(&items, json.Value(item))
+	switch ctx.kind {
+	case .Tag_Open:
+		// After < : show component names and HTML tags
+		for pkg_path, names in server.registry.components {
+			pkg_name := lsp_path_base(pkg_path)
+			for name, _ in names {
+				label := strings.concatenate({pkg_name, ".", name})
+				detail := strings.concatenate({"Component from ", pkg_path})
+				item := json.Object{}
+				item["label"] = json.Value(label)
+				item["kind"] = json.Value(i64(COMPLETION_KIND_CLASS))
+				item["detail"] = json.Value(detail)
+				append(&items, json.Value(item))
+			}
 		}
-	}
+		add_html_tag_completions(&items)
 
-	// 2. Prop completions from component Props structs
-	for pkg_path, names in server.registry.components {
-		pkg_name := lsp_path_base(pkg_path)
-		for name, _ in names {
-			add_prop_completions(server, pkg_path, name, pkg_name, &items)
+	case .Attribute:
+		// Inside an HTML tag — show global attributes
+		add_html_attribute_completions(&items)
+
+	case .Component_Attribute:
+		// Inside a component tag — show props for that component + global attrs
+		if len(ctx.component_pkg) > 0 && len(ctx.component_name) > 0 {
+			add_prop_completions(server, ctx.component_pkg, ctx.component_name, lsp_path_base(ctx.component_pkg), &items)
 		}
+		add_html_attribute_completions(&items)
+
+	case .Content:
+		// Between tags — show HTML tags, components, and block keywords
+		for pkg_path, names in server.registry.components {
+			pkg_name := lsp_path_base(pkg_path)
+			for name, _ in names {
+				label := strings.concatenate({pkg_name, ".", name})
+				detail := strings.concatenate({"Component from ", pkg_path})
+				item := json.Object{}
+				item["label"] = json.Value(label)
+				item["kind"] = json.Value(i64(COMPLETION_KIND_CLASS))
+				item["detail"] = json.Value(detail)
+				append(&items, json.Value(item))
+			}
+		}
+		add_html_tag_completions(&items)
+		add_block_keyword_completions(&items)
+
+	case .Expression, .Script:
+		// No completions from us
 	}
-
-	// 3. HTML tag completions
-	add_html_tag_completions(&items)
-
-	// 4. HTML attribute completions
-	add_html_attribute_completions(&items)
 
 	result := json.Object{}
 	result["isIncomplete"] = json.Value(false)
 	result["items"] = json.Value(items)
-
 	write_response(id, json.Value(result))
+}
+
+// get_completion_context determines the completion context from the cursor position.
+get_completion_context :: proc(server: ^Server, params: json.Value) -> Completion_Context_Info {
+	result := Completion_Context_Info{kind = .Content}
+
+	params_obj, ok := json_get_object(params)
+	if !ok { return result }
+
+	td_obj, td_ok := json_object_get_object(params_obj, "textDocument")
+	if !td_ok { return result }
+	uri := json_object_get_string(td_obj, "uri")
+
+	pos_obj, pos_ok := json_object_get_object(params_obj, "position")
+	if !pos_ok { return result }
+	line := json_object_get_int(pos_obj, "line")      // 0-indexed
+	col := json_object_get_int(pos_obj, "character")   // 0-indexed
+
+	doc, doc_ok := get_document(&server.document_store, uri)
+	if !doc_ok { return result }
+
+	// Get the line text up to cursor
+	lines := strings.split_lines(doc.content)
+	defer delete(lines)
+	if line >= len(lines) { return result }
+
+	line_text := lines[line]
+	if col > len(line_text) { col = len(line_text) }
+	before_cursor := line_text[:col]
+
+	// Check if we're inside <script> block
+	// Simple heuristic: scan all lines up to and including current line for unmatched <script>
+	in_script := false
+	for i in 0..=line {
+		if i >= len(lines) { break }
+		l := lines[i]
+		if strings.contains(l, "<script") { in_script = true }
+		if strings.contains(l, "</script>") { in_script = false }
+	}
+	if in_script {
+		result.kind = .Script
+		return result
+	}
+
+	// Scan backwards from cursor to find context
+	// Look for unmatched < or {
+	i := len(before_cursor) - 1
+	depth_angle := 0
+
+	for i >= 0 {
+		ch := before_cursor[i]
+		if ch == '>' {
+			depth_angle += 1
+		} else if ch == '<' {
+			if depth_angle > 0 {
+				depth_angle -= 1
+			} else {
+				// Found unmatched < — we're inside a tag
+				// Extract tag name (everything between < and first space or > or /)
+				name_start := i + 1
+				name_end := name_start
+				for name_end < len(before_cursor) && before_cursor[name_end] != ' ' && before_cursor[name_end] != '\t' && before_cursor[name_end] != '>' && before_cursor[name_end] != '/' {
+					name_end += 1
+				}
+
+				if name_start == len(before_cursor) || name_start == name_end {
+					// Right after < with no name yet
+					result.kind = .Tag_Open
+				} else {
+					tag_str := before_cursor[name_start:name_end]
+					// Check if it's a component (has a dot)
+					if strings.contains(tag_str, ".") {
+						parts := strings.split(tag_str, ".")
+						defer delete(parts)
+						if len(parts) == 2 {
+							// Find pkg path from registry
+							for pkg_path, names in server.registry.components {
+								if lsp_path_base(pkg_path) == parts[0] {
+									if parts[1] in names {
+										result.kind = .Component_Attribute
+										result.component_pkg = pkg_path
+										result.component_name = parts[1]
+										return result
+									}
+								}
+							}
+						}
+						result.kind = .Attribute
+					} else {
+						result.kind = .Attribute
+					}
+				}
+				return result
+			}
+		} else if ch == '{' {
+			if depth_angle == 0 {
+				result.kind = .Expression
+				return result
+			}
+		}
+		i -= 1
+	}
+
+	// No unmatched < or { found — we're in content
+	result.kind = .Content
+	return result
 }
 
 // add_prop_completions adds prop completion items for a component.
@@ -111,6 +255,33 @@ add_prop_item :: proc(items: ^json.Array, field_name: string, type_expr: string,
 	item["kind"] = json.Value(i64(COMPLETION_KIND_PROPERTY))
 	item["detail"] = json.Value(detail)
 	append(items, json.Value(item))
+}
+
+// ─── Block keyword completions ──────────────────────────────────────────────
+
+Block_Keyword :: struct {
+	label:  string,
+	detail: string,
+	insert: string,
+}
+
+add_block_keyword_completions :: proc(items: ^json.Array) {
+	keywords := []Block_Keyword{
+		{"{#if ",     "Conditional block",    "{#if condition}"},
+		{"{#each ",   "Loop block",           "{#each items as item}"},
+		{"{#snippet ","Snippet definition",   "{#snippet name()}"},
+		{"{@render ",  "Render snippet",      "{@render name()}"},
+		{"{@html ",    "Raw HTML output",     "{@html expression}"},
+	}
+
+	for kw in keywords {
+		item := json.Object{}
+		item["label"] = json.Value(kw.label)
+		item["kind"] = json.Value(i64(COMPLETION_KIND_SNIPPET))
+		item["detail"] = json.Value(kw.detail)
+		item["insertText"] = json.Value(kw.insert)
+		append(items, json.Value(item))
+	}
 }
 
 // ─── HTML completions ───────────────────────────────────────────────────────

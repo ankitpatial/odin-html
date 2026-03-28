@@ -8,7 +8,9 @@
       "file-types": [
         "ohtml"
       ],
-      "injection-regex": "^ohtml$"
+      "injection-regex": "^ohtml$",
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm"
     }
   ],
   "metadata": {

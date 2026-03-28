@@ -1,0 +1,56 @@
+===
+Simple expression
+===
+<span>{label}</span>
+---
+
+(document
+  (element
+    (start_tag (tag_name))
+    (expression (expression_content))
+    (end_tag (tag_name))))
+
+===
+Raw HTML expression
+===
+<div>{@html story_html}</div>
+---
+
+(document
+  (element
+    (start_tag (tag_name))
+    (raw_html_expression (expression_content))
+    (end_tag (tag_name))))
+
+===
+Render expression
+===
+<main>{@render children()}</main>
+---
+
+(document
+  (element
+    (start_tag (tag_name))
+    (render_expression (render_content))
+    (end_tag (tag_name))))
+
+===
+Render with argument
+===
+{@render item(p)}
+---
+
+(document
+  (render_expression (render_content)))
+
+===
+Expression with nested braces
+===
+<span>{fmt.tprintf("%v", map[string]int{})}</span>
+---
+
+(document
+  (element
+    (start_tag (tag_name))
+    (expression (expression_content))
+    (end_tag (tag_name))))

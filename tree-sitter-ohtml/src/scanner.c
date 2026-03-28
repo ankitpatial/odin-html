@@ -43,6 +43,38 @@ static bool scan_script_content(TSLexer *lexer) {
   return false;
 }
 
+static bool scan_expression_content(TSLexer *lexer) {
+  int depth = 0;
+  bool has_content = false;
+
+  // Skip leading whitespace
+  while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
+         lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+    lexer->advance(lexer, true);
+  }
+
+  while (lexer->lookahead != 0) {
+    if (lexer->lookahead == '{') {
+      depth++;
+      has_content = true;
+      lexer->advance(lexer, false);
+    } else if (lexer->lookahead == '}') {
+      if (depth == 0) {
+        lexer->mark_end(lexer);
+        lexer->result_symbol = EXPRESSION_CONTENT;
+        return has_content;
+      }
+      depth--;
+      has_content = true;
+      lexer->advance(lexer, false);
+    } else {
+      has_content = true;
+      lexer->advance(lexer, false);
+    }
+  }
+  return false;
+}
+
 static bool scan_raw_text(TSLexer *lexer) {
   // Skip leading whitespace
   while (lexer->lookahead != 0 &&
@@ -74,6 +106,10 @@ bool tree_sitter_ohtml_external_scanner_scan(
 ) {
   if (valid_symbols[SCRIPT_CONTENT]) {
     return scan_script_content(lexer);
+  }
+
+  if (valid_symbols[EXPRESSION_CONTENT]) {
+    return scan_expression_content(lexer);
   }
 
   if (valid_symbols[RAW_TEXT]) {

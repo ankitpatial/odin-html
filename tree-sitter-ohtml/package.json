@@ -1,0 +1,24 @@
+{
+  "name": "tree-sitter-ohtml",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for OHTML (Odin HTML) template files",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "parser",
+    "ohtml",
+    "odin"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "nan": "^2.18.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.24.0"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  }
+}

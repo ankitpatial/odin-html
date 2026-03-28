@@ -199,6 +199,8 @@ handle_did_close :: proc(server: ^Server, params: json.Value) {
 
 // build_registry discovers all .ohtml files in the workspace and builds
 // the component registry for resolution.
+// It also detects the actual ohtml project root (common ancestor of .ohtml files)
+// and sets server.root_path to it, so import paths resolve correctly.
 build_registry :: proc(server: ^Server) {
 	if len(server.root_path) == 0 {
 		return
@@ -207,7 +209,18 @@ build_registry :: proc(server: ^Server) {
 	files := lsp_discover_ohtml_files(server.root_path)
 	defer delete(files)
 
-	log("ohtml-lsp: discovered %d .ohtml files in %s", len(files), server.root_path)
+	if len(files) == 0 {
+		log("ohtml-lsp: no .ohtml files found in %s", server.root_path)
+		return
+	}
+
+	// Detect the actual ohtml project root: common directory prefix of all .ohtml files
+	src_dir := detect_src_dir(files[:])
+	if len(src_dir) > 0 {
+		server.root_path = src_dir
+	}
+
+	log("ohtml-lsp: discovered %d .ohtml files, src_dir=%s", len(files), server.root_path)
 
 	for file in files {
 		if lsp_is_page_file(file) || lsp_is_layout_file(file) {
@@ -218,6 +231,28 @@ build_registry :: proc(server: ^Server) {
 		comp_name := lsp_path_stem(lsp_path_base(rel))
 		resolver.register_component(&server.registry, rel_dir, comp_name)
 	}
+}
+
+// detect_src_dir finds the deepest common directory of all .ohtml files.
+// e.g. if files are all under /repo/examples/ecomm/, returns that path.
+detect_src_dir :: proc(files: []string) -> string {
+	if len(files) == 0 { return "" }
+
+	// Start with the directory of the first file
+	common := lsp_path_dir(files[0])
+
+	for file in files[1:] {
+		dir := lsp_path_dir(file)
+		// Find common prefix
+		for !strings.has_prefix(dir, common) {
+			common = lsp_path_dir(common)
+			if common == "." || len(common) == 0 {
+				return ""
+			}
+		}
+	}
+
+	return common
 }
 
 // ---- File Discovery Helpers ----

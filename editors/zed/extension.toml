@@ -1,13 +1,13 @@
 id = "ohtml"
 name = "OHTML"
-version = "0.1.0"
+version = "0.2.0"
 schema_version = 1
 authors = ["Ankit Patial"]
-description = "Odin HTML template language support with syntax highlighting and Odin injection"
+description = "Odin HTML template language support with syntax highlighting, diagnostics, and completions"
 repository = "https://github.com/ankitpatial/odin-html"
 
-[language_servers.ols]
-name = "OLS"
+[language_servers.ohtml-lsp]
+name = "OHTML LSP"
 language = "OHTML"
 
 [grammars.ohtml]

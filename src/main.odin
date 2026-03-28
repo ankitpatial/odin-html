@@ -9,6 +9,7 @@ import "core:time"
 import ast "ast"
 import codegen "codegen"
 import errors "errors"
+import lsp "lsp"
 import parser "parser"
 import resolver "resolver"
 import runtime_gen "runtime_gen"
@@ -52,6 +53,9 @@ main :: proc() {
 		code := cmd_fmt(src_dir)
 		os.exit(code)
 
+	case "lsp":
+		lsp.run()
+
 	case:
 		fmt.eprintfln("Unknown command: %s", command)
 		print_usage()
@@ -66,6 +70,7 @@ print_usage :: proc() {
 	fmt.eprintln("  ohtml generate <src> [-o <out>]")
 	fmt.eprintln("  ohtml watch    <src> [-o <out>]")
 	fmt.eprintln("  ohtml fmt      <src>")
+	fmt.eprintln("  ohtml lsp")
 }
 
 // parse_src_out_args parses remaining args after the command.

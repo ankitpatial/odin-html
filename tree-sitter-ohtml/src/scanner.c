@@ -5,6 +5,7 @@ enum TokenType {
   SCRIPT_CONTENT,
   EXPRESSION_CONTENT,
   RAW_TEXT,
+  COMMENT,
 };
 
 void *tree_sitter_ohtml_external_scanner_create(void) { return NULL; }
@@ -75,6 +76,38 @@ static bool scan_expression_content(TSLexer *lexer) {
   return false;
 }
 
+static bool scan_comment(TSLexer *lexer) {
+  // We expect to be positioned at '<'
+  // Check for <!--
+  if (lexer->lookahead != '<') return false;
+  lexer->advance(lexer, false);
+  if (lexer->lookahead != '!') return false;
+  lexer->advance(lexer, false);
+  if (lexer->lookahead != '-') return false;
+  lexer->advance(lexer, false);
+  if (lexer->lookahead != '-') return false;
+  lexer->advance(lexer, false);
+
+  // Now read until -->
+  while (lexer->lookahead != 0) {
+    if (lexer->lookahead == '-') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead == '-') {
+        lexer->advance(lexer, false);
+        if (lexer->lookahead == '>') {
+          lexer->advance(lexer, false);
+          lexer->mark_end(lexer);
+          lexer->result_symbol = COMMENT;
+          return true;
+        }
+      }
+    } else {
+      lexer->advance(lexer, false);
+    }
+  }
+  return false;
+}
+
 static bool scan_raw_text(TSLexer *lexer) {
   // Skip leading whitespace
   while (lexer->lookahead != 0 &&
@@ -110,6 +143,10 @@ bool tree_sitter_ohtml_external_scanner_scan(
 
   if (valid_symbols[EXPRESSION_CONTENT]) {
     return scan_expression_content(lexer);
+  }
+
+  if (valid_symbols[COMMENT] && lexer->lookahead == '<') {
+    return scan_comment(lexer);
   }
 
   if (valid_symbols[RAW_TEXT]) {

@@ -1,0 +1,89 @@
+===
+Simple if block
+===
+{#if on_sale}
+    <span>Sale!</span>
+{/if}
+---
+
+(document
+  (if_block
+    (if_start (expression_content))
+    (element
+      (start_tag (tag_name))
+      (text)
+      (end_tag (tag_name)))
+    (if_end)))
+
+===
+If/else if/else block
+===
+{#if on_sale}
+    <span>Sale</span>
+{:else if is_new}
+    <span>New</span>
+{:else}
+    <span>Regular</span>
+{/if}
+---
+
+(document
+  (if_block
+    (if_start (expression_content))
+    (element
+      (start_tag (tag_name))
+      (text)
+      (end_tag (tag_name)))
+    (else_if_clause
+      (expression_content)
+      (element
+        (start_tag (tag_name))
+        (text)
+        (end_tag (tag_name))))
+    (else_clause
+      (element
+        (start_tag (tag_name))
+        (text)
+        (end_tag (tag_name))))
+    (if_end)))
+
+===
+Each block
+===
+{#each products as p}
+    <span>{p.name}</span>
+{/each}
+---
+
+(document
+  (each_block
+    (each_start (expression_content))
+    (element
+      (start_tag (tag_name))
+      (expression (expression_content))
+      (end_tag (tag_name)))
+    (each_end)))
+
+===
+Each with index and else
+===
+{#each items as item, idx}
+    <span>{item}</span>
+{:else}
+    <p>No items.</p>
+{/each}
+---
+
+(document
+  (each_block
+    (each_start (expression_content))
+    (element
+      (start_tag (tag_name))
+      (expression (expression_content))
+      (end_tag (tag_name)))
+    (else_clause
+      (element
+        (start_tag (tag_name))
+        (text)
+        (end_tag (tag_name))))
+    (each_end)))

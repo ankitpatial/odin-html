@@ -1,0 +1,37 @@
+===
+Snippet definition without params
+===
+{#snippet header()}
+    <h1>Title</h1>
+{/snippet}
+---
+
+(document
+  (snippet_block
+    (snippet_start
+      (snippet_name)
+      (snippet_params))
+    (element
+      (start_tag (tag_name))
+      (text)
+      (end_tag (tag_name)))
+    (snippet_end)))
+
+===
+Snippet with typed parameter
+===
+{#snippet item(p: Product)}
+    <span>{p.name}</span>
+{/snippet}
+---
+
+(document
+  (snippet_block
+    (snippet_start
+      (snippet_name)
+      (snippet_params))
+    (element
+      (start_tag (tag_name))
+      (expression (expression_content))
+      (end_tag (tag_name)))
+    (snippet_end)))

@@ -1,0 +1,65 @@
+===
+Static attribute
+===
+<div class="container">hello</div>
+---
+
+(document
+  (element
+    (start_tag
+      (tag_name)
+      (attribute (attribute_name) (quoted_attribute_value)))
+    (text)
+    (end_tag (tag_name))))
+
+===
+Dynamic attribute
+===
+<a href={slug}>link</a>
+---
+
+(document
+  (element
+    (start_tag
+      (tag_name)
+      (attribute (attribute_name) (expression (expression_content))))
+    (text)
+    (end_tag (tag_name))))
+
+===
+Shorthand attribute
+===
+<input {disabled} />
+---
+
+(document
+  (self_closing_element
+    (self_closing_tag
+      (tag_name)
+      (attribute_shorthand (expression_content)))))
+
+===
+Multiple attributes
+===
+<img src={image_url} alt={name} class="thumb" />
+---
+
+(document
+  (self_closing_element
+    (self_closing_tag
+      (tag_name)
+      (attribute (attribute_name) (expression (expression_content)))
+      (attribute (attribute_name) (expression (expression_content)))
+      (attribute (attribute_name) (quoted_attribute_value)))))
+
+===
+Boolean attribute without value
+===
+<input disabled />
+---
+
+(document
+  (self_closing_element
+    (self_closing_tag
+      (tag_name)
+      (attribute (attribute_name)))))

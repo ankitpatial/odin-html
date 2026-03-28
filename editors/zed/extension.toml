@@ -1,0 +1,10 @@
+[package]
+name = "ohtml"
+version = "0.1.0"
+description = "Odin HTML template language support — syntax highlighting with Odin injection"
+authors = ["Ankit Patial"]
+repository = "https://github.com/ankitpatial/odin-html"
+
+[grammars.ohtml]
+repository = "https://github.com/ankitpatial/odin-html"
+path = "tree-sitter-ohtml"

@@ -245,8 +245,9 @@ detect_src_dir :: proc(files: []string) -> string {
 		dir := lsp_path_dir(file)
 		// Find common prefix
 		for !strings.has_prefix(dir, common) {
+			prev := common
 			common = lsp_path_dir(common)
-			if common == "." || len(common) == 0 {
+			if common == prev || common == "." || len(common) == 0 {
 				return ""
 			}
 		}
@@ -280,6 +281,11 @@ lsp_walk_dir :: proc(dir: string, result: ^[dynamic]string) {
 	for info in infos {
 		full_path := strings.concatenate({dir, "/", info.name})
 		if info.type == .Directory {
+			// Skip hidden directories and common non-source directories
+			if strings.has_prefix(info.name, ".") || info.name == "node_modules" || info.name == "target" {
+				delete(full_path)
+				continue
+			}
 			lsp_walk_dir(full_path, result)
 			delete(full_path)
 		} else if strings.has_suffix(info.name, ".ohtml") {

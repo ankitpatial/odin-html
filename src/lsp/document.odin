@@ -35,6 +35,10 @@ open_document :: proc(store: ^Document_Store, uri: string, content: string, regi
 		content = content,
 	}
 	parse_document(&doc, registry, src_dir)
+	// Free old document resources if overwriting
+	if old_doc, exists := &store.documents[uri]; exists {
+		delete(old_doc.parse_errors)
+	}
 	store.documents[uri] = doc
 }
 
@@ -45,6 +49,10 @@ update_document :: proc(store: ^Document_Store, uri: string, content: string, re
 		content = content,
 	}
 	parse_document(&doc, registry, src_dir)
+	// Free old document resources if overwriting
+	if old_doc, exists := &store.documents[uri]; exists {
+		delete(old_doc.parse_errors)
+	}
 	store.documents[uri] = doc
 }
 

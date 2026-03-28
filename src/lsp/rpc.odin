@@ -36,7 +36,9 @@ read_message :: proc() -> (json.Value, bool) {
 	// Parse Content-Length from headers
 	header_str := string(header[:])
 	content_length := 0
-	for line in strings.split_lines(header_str) {
+	header_lines := strings.split_lines(header_str)
+	defer delete(header_lines)
+	for line in header_lines {
 		trimmed := strings.trim_space(line)
 		if strings.has_prefix(trimmed, "Content-Length:") {
 			num_str := strings.trim_space(trimmed[len("Content-Length:"):])
@@ -50,6 +52,12 @@ read_message :: proc() -> (json.Value, bool) {
 	if content_length <= 0 {
 		log("error: invalid Content-Length in header")
 		return nil, false
+	}
+
+	// Cap at 64MB to prevent memory exhaustion
+	if content_length > 64 * 1024 * 1024 {
+		log("ohtml-lsp: message too large: %d bytes", content_length)
+		return {}, false
 	}
 
 	// Read exactly content_length bytes for the body

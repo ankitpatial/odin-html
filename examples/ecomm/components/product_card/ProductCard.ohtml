@@ -1,6 +1,6 @@
 <script lang="odin">
-import "components/badge"
-import "components/price"
+import "../badge"
+import "../price"
 
 Props :: struct {
     name: string,

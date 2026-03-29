@@ -97,9 +97,7 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
     if layout_chain != nil && len(layout_chain) > 0 {
         gen_layout_inlined(&g, doc.children[:], layout_chain, &g.b)
     } else {
-        for node in doc.children {
-            gen_node(&g, node, &g.b)
-        }
+        gen_nodes(&g, doc.children[:], &g.b)
     }
 
     pop_scope(&g)
@@ -192,7 +190,7 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
 
     strings.write_string(&out, "}\n")
 
-    return strings.to_string(out)
+    return merge_static_writes(strings.to_string(out))
 }
 
 // ─── scope helpers ────────────────────────────────────────────────────────────
@@ -396,6 +394,70 @@ flush_static :: proc(g: ^Generator, buf: ^strings.Builder, b: ^strings.Builder) 
         fmt.sbprintf(b, "io.write_string(w, %q)\n", s)
         strings.builder_reset(buf)
     }
+}
+
+// merge_static_writes post-processes generated code to merge consecutive
+// io.write_string(w, "...") lines into a single call, reducing function call
+// overhead at runtime. Lines must share the same indentation to be merged.
+merge_static_writes :: proc(code: string) -> string {
+    MARKER :: `io.write_string(w, "`
+
+    lines := strings.split(code, "\n")
+    defer delete(lines)
+
+    result := strings.Builder{}
+    strings.builder_init(&result)
+
+    i := 0
+    for i < len(lines) {
+        trimmed := strings.trim_left_space(lines[i])
+        if !strings.has_prefix(trimmed, MARKER) || !strings.has_suffix(trimmed, `")`) {
+            strings.write_string(&result, lines[i])
+            strings.write_byte(&result, '\n')
+            i += 1
+            continue
+        }
+
+        // Compute indent (leading whitespace)
+        indent := lines[i][:len(lines[i]) - len(trimmed)]
+
+        // Extract string content from first line
+        merged := strings.Builder{}
+        strings.builder_init(&merged)
+        // Content is between MARKER and closing ")
+        content := trimmed[len(MARKER):len(trimmed) - 2]
+        strings.write_string(&merged, content)
+        i += 1
+
+        // Merge subsequent lines with same indent and pattern
+        for i < len(lines) {
+            next_trimmed := strings.trim_left_space(lines[i])
+            next_indent := lines[i][:len(lines[i]) - len(next_trimmed)]
+            if next_indent != indent { break }
+            if !strings.has_prefix(next_trimmed, MARKER) { break }
+            if !strings.has_suffix(next_trimmed, `")`) { break }
+            next_content := next_trimmed[len(MARKER):len(next_trimmed) - 2]
+            strings.write_string(&merged, next_content)
+            i += 1
+        }
+
+        // Emit merged line
+        strings.write_string(&result, indent)
+        strings.write_string(&result, MARKER)
+        strings.write_string(&result, strings.to_string(merged))
+        strings.write_string(&result, "\")\n")
+    }
+
+    // Remove trailing extra newline if present (split adds one)
+    out := strings.to_string(result)
+    if len(out) > 0 && out[len(out)-1] == '\n' {
+        // The original code may or may not end with newline; trim one extra
+        // that split+rejoin adds. Check if original ends with \n.
+        if len(code) > 0 && code[len(code)-1] != '\n' {
+            return out[:len(out)-1]
+        }
+    }
+    return out
 }
 
 // Generates a list of nodes, collapsing adjacent static text into single io.write_string calls

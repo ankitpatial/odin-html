@@ -223,9 +223,9 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
 
 		code: string
 		if is_page_file(file) {
-			// Resolve layout chain
-			layout_chain_paths := resolver.resolve_layout_chain(file, src_dir)
-			defer delete(layout_chain_paths)
+			// Check if the page is standalone (has its own <!DOCTYPE).
+			// Standalone pages skip layout inlining.
+			is_standalone := page_has_doctype(file)
 
 			layout_docs := make([dynamic]ast.Document)
 			defer delete(layout_docs)
@@ -235,13 +235,18 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
 				delete(layout_src_bufs)
 			}
 
-			for lp in layout_chain_paths {
-				lp_bytes, lp_read_err := os.read_entire_file_from_path(lp, context.allocator)
-				if lp_read_err != nil {continue}
-				append(&layout_src_bufs, lp_bytes)
-				lp_doc, lp_err := parser.parse(string(lp_bytes), lp)
-				if _, has_err := lp_err.?; !has_err {
-					append(&layout_docs, lp_doc)
+			if !is_standalone {
+				layout_chain_paths := resolver.resolve_layout_chain(file, src_dir)
+				defer delete(layout_chain_paths)
+
+				for lp in layout_chain_paths {
+					lp_bytes, lp_read_err := os.read_entire_file_from_path(lp, context.allocator)
+					if lp_read_err != nil {continue}
+					append(&layout_src_bufs, lp_bytes)
+					lp_doc, lp_err := parser.parse(string(lp_bytes), lp)
+					if _, has_err := lp_err.?; !has_err {
+						append(&layout_docs, lp_doc)
+					}
 				}
 			}
 
@@ -681,4 +686,19 @@ compute_pkg_name :: proc(rel: string, src_dir: string) -> string {
 	}
 	if len(last_seg) == 0 {return "root"}
 	return strings.to_lower(last_seg)
+}
+
+// page_has_doctype checks whether a page file contains its own <!DOCTYPE declaration.
+// Standalone pages (with DOCTYPE) skip layout inlining.
+page_has_doctype :: proc(file_path: string) -> bool {
+	data, err := os.read_entire_file_from_path(file_path, context.temp_allocator)
+	if err != nil { return false }
+	src := string(data)
+	// Skip the <script lang="odin">...</script> block if present
+	rest := src
+	if idx := strings.index(src, "</script>"); idx >= 0 {
+		rest = src[idx + len("</script>"):]
+	}
+	trimmed := strings.trim_left_space(rest)
+	return strings.has_prefix(trimmed, "<!DOCTYPE") || strings.has_prefix(trimmed, "<!doctype")
 }

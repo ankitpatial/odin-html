@@ -207,12 +207,16 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
 		pkg_name := compute_pkg_name(rel, src_dir)
 		route_params := extract_route_params(rel)
 
-		// Rewrite imports to be relative from the generated file's output directory
-		out_rel_dir := normalize_path_brackets(path_dir(rel))
+		// Rewrite imports to be relative from the generated file's output directory.
+		// At this point imp.path is absolute from source root (resolved in phase 6).
+		// We strip (group) segments, then make relative to the output directory.
+		out_rel_dir := normalize_path_special(path_dir(rel))
 		if script, ok := &doc.script.?; ok {
 			for &imp in script.imports {
 				if strings.has_prefix(imp.path, "core:") {continue}
-				imp.path = make_relative_path(out_rel_dir, imp.path)
+				// Strip (group) segments from the resolved absolute import path
+				normalized := normalize_path_special(imp.path)
+				imp.path = make_relative_path(out_rel_dir, normalized)
 			}
 		}
 		rt_import := make_relative_path(out_rel_dir, "rt")
@@ -606,20 +610,33 @@ strip_brackets :: proc(segment: string) -> string {
 	return strings.trim(segment, "[]")
 }
 
-// normalize_path_brackets removes [bracket] segments from a slash-separated path.
+// is_group_segment returns true for (parenthesized) path groups like "(auth)".
+// Group directories are logical groupings — they are stripped from output paths
+// but can contain +layout.ohtml that applies to children (SvelteKit convention).
+is_group_segment :: proc(seg: string) -> bool {
+	return len(seg) > 2 && seg[0] == '(' && seg[len(seg) - 1] == ')'
+}
+
+// normalize_path_special strips [bracket] route param segments and (group) segments
+// from a slash-separated path.
 // e.g. "views/product/[slug]" -> "views/product"
-normalize_path_brackets :: proc(path: string) -> string {
+// e.g. "views/(auth)/login" -> "views/login"
+normalize_path_special :: proc(path: string) -> string {
 	segments := strings.split(path, "/")
 	defer delete(segments)
 	filtered := make([dynamic]string)
 	defer delete(filtered)
 	for seg in segments {
-		if len(seg) > 0 && seg[0] == '[' {continue}
+		if len(seg) > 0 && seg[0] == '[' {continue}   // route param
+		if is_group_segment(seg) {continue}             // logical group
 		append(&filtered, seg)
 	}
 	if len(filtered) == 0 {return "."}
 	return strings.join(filtered[:], "/")
 }
+
+// Keep old name as alias for backwards compat within the codebase.
+normalize_path_brackets :: normalize_path_special
 
 // extract_route_params extracts parameter names from [bracket] directory segments.
 // e.g. "product/[slug]/+page.ohtml" -> ["slug"]
@@ -664,8 +681,8 @@ compute_out_path :: proc(out_dir: string, rel: string, file: string) -> string {
 }
 
 // compute_pkg_name returns the Odin package name for a generated file.
-// It uses the last non-bracket directory segment of the relative path.
-// [bracket] segments are skipped (they are route params, not package scopes).
+// It uses the last non-special directory segment of the relative path.
+// [bracket] segments (route params) and (group) segments are skipped.
 compute_pkg_name :: proc(rel: string, src_dir: string) -> string {
 	rel_dir := path_dir(rel)
 	if rel_dir == "." {
@@ -675,14 +692,15 @@ compute_pkg_name :: proc(rel: string, src_dir: string) -> string {
 		}
 		return strings.to_lower(strip_brackets(base))
 	}
-	// Find the last non-bracket segment
+	// Find the last non-special segment (skip [brackets] and (groups))
 	segments := strings.split(rel_dir, "/")
 	defer delete(segments)
 	last_seg := ""
 	for seg in segments {
-		if len(seg) > 0 && seg[0] != '[' {
-			last_seg = seg
-		}
+		if len(seg) == 0 {continue}
+		if seg[0] == '[' {continue}        // route param
+		if is_group_segment(seg) {continue} // logical group
+		last_seg = seg
 	}
 	if len(last_seg) == 0 {return "root"}
 	return strings.to_lower(last_seg)

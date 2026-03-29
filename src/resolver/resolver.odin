@@ -184,15 +184,31 @@ resolve_layout_chain :: proc(page_path: string, views_root: string) -> [dynamic]
         }
     }
 
-    // Check each directory for +layout.ohtml
-    for d in dirs {
+    // Check each directory for +layout.ohtml.
+    // A (group) directory with a layout resets the chain — the group layout
+    // replaces all parent layouts (SvelteKit convention).
+    for d, i in dirs {
         layout_path := strings.concatenate([]string{d, "/+layout.ohtml"})
         if os.exists(layout_path) {
+            // If this directory is a (group), clear prior layouts — group layout replaces parents.
+            if i > 0 {
+                base := last_segment(d)
+                if len(base) > 2 && base[0] == '(' && base[len(base) - 1] == ')' {
+                    clear(&chain)
+                }
+            }
             append(&chain, layout_path)
         }
     }
 
     return chain
+}
+
+// last_segment returns the final component of a slash-separated path.
+last_segment :: proc(path: string) -> string {
+    idx := strings.last_index_byte(path, '/')
+    if idx < 0 { return path }
+    return path[idx + 1:]
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

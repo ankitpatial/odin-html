@@ -12,15 +12,17 @@ Parser :: struct {
     tokens: [dynamic]token.Token,
     pos:    int,
     file:   string,
+    doc:    ^ast.Document,
 }
 
 // ─── entry point ──────────────────────────────────────────────────────────────
 
 parse :: proc(src: string, file: string) -> (ast.Document, Maybe(errors.Error)) {
     tokens := lexer.tokenize(src)
-    p := Parser{tokens = tokens, pos = 0, file = file}
     doc := ast.Document{file = file}
     doc.children = make([dynamic]ast.Node)
+    doc.svelte_head = make([dynamic]ast.Node)
+    p := Parser{tokens = tokens, pos = 0, file = file, doc = &doc}
 
     // Check for script block first (it must appear before any HTML children)
     if p.pos < len(p.tokens) && p.tokens[p.pos].kind == .Script_Open {
@@ -81,8 +83,15 @@ parse_script_block :: proc(p: ^Parser) -> (ast.Script_Block, Maybe(errors.Error)
     sb := ast.Script_Block{}
     sb.imports = make([dynamic]ast.Import)
 
-    // consume Script_Open
-    advance_tok(p)
+    // consume Script_Open — its value contains the lang attribute
+    open_tok := advance_tok(p)
+
+    // Detect language from the Script_Open token value
+    lang := "odin"
+    if strings.contains(open_tok.value, "lang=\"ts\"") {
+        lang = "ts"
+    }
+    sb.lang = lang
 
     // consume Script_Content
     if p.pos >= len(p.tokens) || p.tokens[p.pos].kind != .Script_Content {
@@ -96,9 +105,17 @@ parse_script_block :: proc(p: ^Parser) -> (ast.Script_Block, Maybe(errors.Error)
         advance_tok(p)
     }
 
-    // Parse the raw script content for imports and Props struct
-    if err := parse_script_content(sb.raw, &sb, p.file); err != nil {
-        return sb, err
+    // Parse the raw script content based on language
+    if lang == "ts" {
+        props, imports := parse_ts_script(sb.raw, p.file)
+        sb.props = props
+        sb.imports = imports
+        // Clear raw so codegen doesn't try to extract Odin defs from TypeScript
+        sb.raw = ""
+    } else {
+        if err := parse_script_content(sb.raw, &sb, p.file); err != nil {
+            return sb, err
+        }
     }
 
     return sb, nil
@@ -410,6 +427,76 @@ parse_element :: proc(p: ^Parser) -> (Maybe(ast.Node), Maybe(errors.Error)) {
     advance_tok(p)
     tag := name_tok.value
 
+    // <slot /> is an alias for {@render children()}
+    if tag == "slot" {
+        // Consume remaining tokens until Tag_Self_Close or Tag_Close
+        for p.pos < len(p.tokens) {
+            tok := peek_tok(p)
+            if tok.kind == .Tag_Self_Close || tok.kind == .Tag_Close || tok.kind == .EOF {
+                advance_tok(p)
+                break
+            }
+            advance_tok(p)
+        }
+        node := ast.Node(ast.Render_Call{name = "children", args = nil, pos = pos})
+        return node, nil
+    }
+
+    // <svelte:head> — parse children and store in doc.svelte_head for injection into <head>
+    if tag == "svelte:head" {
+        // Consume remaining attrs/close of opening tag
+        for p.pos < len(p.tokens) {
+            tok := peek_tok(p)
+            if tok.kind == .Tag_Close || tok.kind == .Tag_Self_Close || tok.kind == .EOF { break }
+            advance_tok(p)
+        }
+        if peek_tok(p).kind == .Tag_Self_Close {
+            advance_tok(p)
+            return nil, nil
+        }
+        advance_tok(p) // consume >
+
+        // Parse children until </svelte:head>
+        children, child_err := parse_children(p, {.Tag_End_Open})
+        if child_err_val, has_err := child_err.?; has_err {
+            return nil, child_err_val
+        }
+
+        // Consume </svelte:head>
+        for p.pos < len(p.tokens) {
+            t := advance_tok(p)
+            if t.kind == .Tag_Close { break }
+        }
+
+        // Store in document's svelte_head
+        for child in children {
+            append(&p.doc.svelte_head, child)
+        }
+        delete(children)
+
+        return nil, nil
+    }
+
+    // <svelte:body>, <svelte:window>, etc. — skip entirely for SSR
+    if strings.has_prefix(tag, "svelte:") {
+        depth := 1
+        for p.pos < len(p.tokens) {
+            tok := advance_tok(p)
+            if tok.kind == .Tag_Self_Close { depth -= 1 }
+            if tok.kind == .Tag_Open { depth += 1 }
+            if tok.kind == .Tag_End_Open {
+                // consume closing tag name and >
+                for p.pos < len(p.tokens) {
+                    t := advance_tok(p)
+                    if t.kind == .Tag_Close { break }
+                }
+                depth -= 1
+            }
+            if depth <= 0 || tok.kind == .EOF { break }
+        }
+        return nil, nil
+    }
+
     el := ast.Element{tag = tag, pos = pos}
     el.attributes = make([dynamic]ast.Attribute)
     el.children = make([dynamic]ast.Node)
@@ -490,8 +577,10 @@ parse_component :: proc(p: ^Parser, pos: token.Pos) -> (Maybe(ast.Node), Maybe(e
     full_name := name_tok.value
 
     // split "pkg.Name" into pkg and name
+    // For dot-style (ohtml): "card.Card" -> pkg="card", name="Card"
+    // For bare-name (svelte): "Badge" -> pkg="Badge", name="Badge"
     dot_idx := strings.index(full_name, ".")
-    pkg := ""
+    pkg := full_name
     name := full_name
     if dot_idx >= 0 {
         pkg = full_name[:dot_idx]

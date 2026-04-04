@@ -27,10 +27,15 @@ Generator :: struct {
     // When non-nil, {@render children()} emits this pre-generated content instead
     // of the normal rt.children_render call. Used for layout inlining.
     layout_children_content: Maybe(string),
+    // When non-nil, {@render __svelte_head__()} emits this pre-generated content.
+    // Used to inject <svelte:head> content into app.html's <head>.
+    svelte_head_content: Maybe(string),
     // When true, whitespace in Text nodes is preserved exactly (inside <pre>/<code>)
     preserve_whitespace: bool,
     // Prefix for props references ("props" in render body, "ctx" in component children)
     props_prefix: string,
+    // When true, emit Svelte 5 hydration markers (<!--[--> / <!--]-->) around if/each blocks
+    hydration: bool,
 }
 
 // ─── entry points ─────────────────────────────────────────────────────────────
@@ -47,6 +52,11 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
     g.props_fields = make(map[string]string)
     g.snippet_fields = make(map[string]string)
     g.props_prefix = "props"
+
+    // Enable hydration markers for .svelte files
+    if strings.has_suffix(doc.file, ".svelte") {
+        g.hydration = true
+    }
 
     // Build props_fields and snippet_fields lookup
     if script, ok := doc.script.?; ok {
@@ -95,7 +105,7 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
     // layout_chain is ordered outermost to innermost.
     // We emit: layout[0].before + layout[1].before + ... + page + ... + layout[1].after + layout[0].after
     if layout_chain != nil && len(layout_chain) > 0 {
-        gen_layout_inlined(&g, doc.children[:], layout_chain, &g.b)
+        gen_layout_inlined(&g, doc.children[:], layout_chain, doc.svelte_head[:], &g.b)
     } else {
         gen_nodes(&g, doc.children[:], &g.b)
     }
@@ -129,7 +139,7 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
                 continue
             }
             if alias, ok2 := imp.alias.?; ok2 {
-                fmt.sbprintf(&out, "import %s \"%s\"\n", alias, imp.path)
+                fmt.sbprintf(&out, "import %s \"%s\"\n", strings.to_lower(alias), imp.path)
             } else {
                 fmt.sbprintf(&out, "import \"%s\"\n", imp.path)
             }
@@ -144,6 +154,19 @@ generate_page :: proc(doc: ast.Document, pkg_name: string, layout_chain: []ast.D
         if len(extra) > 0 {
             strings.write_string(&out, extra)
             strings.write_string(&out, "\n\n")
+        }
+    }
+
+    // Inline struct definitions (generated from TS inline object types)
+    if script, ok := doc.script.?; ok {
+        if props_def, ok2 := script.props.?; ok2 {
+            for is_def in props_def.inline_structs {
+                fmt.sbprintf(&out, "%s :: struct {{\n", is_def.name)
+                for field in is_def.fields {
+                    fmt.sbprintf(&out, "    %s: %s,\n", field.name, field.type_expr)
+                }
+                strings.write_string(&out, "}\n\n")
+            }
         }
     }
 
@@ -258,6 +281,11 @@ is_odin_keyword :: proc(ident: string) -> bool {
 resolve_expr :: proc(g: ^Generator, expr: string) -> string {
     trimmed := strings.trim_space(expr)
     if len(trimmed) == 0 { return trimmed }
+
+    // Convert JS .length to Odin len(): "x.length > 0" → "len(x) > 0"
+    if strings.contains(trimmed, ".length") {
+        trimmed = _convert_js_length(g, trimmed)
+    }
 
     result := strings.Builder{}
     strings.builder_init(&result)
@@ -397,6 +425,30 @@ flush_static :: proc(g: ^Generator, buf: ^strings.Builder, b: ^strings.Builder) 
 }
 
 // merge_static_writes post-processes generated code to merge consecutive
+// Convert JS ".length" property access to Odin "len()" calls.
+// e.g. "props.msg.length > 0" → "len(props.msg) > 0"
+// e.g. "msg.length" → "len(msg)"
+@(private)
+_convert_js_length :: proc(g: ^Generator, expr: string) -> string {
+    idx := strings.index(expr, ".length")
+    if idx < 0 { return expr }
+
+    // Extract the variable part before .length
+    var_part := expr[:idx]
+    rest := expr[idx + len(".length"):]
+
+    // Resolve the variable (adds props. prefix if needed)
+    resolved_var := resolve_ident(g, strings.trim_space(var_part))
+
+    buf := strings.Builder{}
+    strings.builder_init(&buf)
+    strings.write_string(&buf, "len(")
+    strings.write_string(&buf, resolved_var)
+    strings.write_string(&buf, ")")
+    strings.write_string(&buf, rest)
+    return strings.to_string(buf)
+}
+
 // io.write_string(w, "...") lines into a single call, reducing function call
 // overhead at runtime. Lines must share the same indentation to be merged.
 merge_static_writes :: proc(code: string) -> string {
@@ -571,6 +623,7 @@ are_element_static :: proc(el: ast.Element) -> bool {
 gen_element_static_open :: proc(buf: ^strings.Builder, el: ast.Element) {
     fmt.sbprintf(buf, "<%s", el.tag)
     for attr in el.attributes {
+        if is_client_only_attr(attr.name, attr.value) { continue }
         switch v in attr.value {
         case ast.Static_Value:
             fmt.sbprintf(buf, " %s=\"%s\"", attr.name, v.value)
@@ -632,6 +685,7 @@ gen_element_open_dynamic :: proc(g: ^Generator, el: ast.Element, b: ^strings.Bui
     fmt.sbprintf(&static_prefix, "<%s", el.tag)
 
     for attr in el.attributes {
+        if is_client_only_attr(attr.name, attr.value) { continue }
         switch v in attr.value {
         case ast.Static_Value:
             fmt.sbprintf(&static_prefix, " %s=\"%s\"", attr.name, v.value)
@@ -749,6 +803,12 @@ gen_raw_html :: proc(g: ^Generator, raw: ast.Raw_Html, b: ^strings.Builder) {
 // ─── if block ─────────────────────────────────────────────────────────────────
 
 gen_if_block :: proc(g: ^Generator, ib: ast.If_Block, b: ^strings.Builder) {
+    // Hydration opening marker
+    if g.hydration {
+        write_indent(g, b)
+        strings.write_string(b, "io.write_string(w, \"<!--[-->\")\n")
+    }
+
     condition := resolve_expr(g, ib.condition)
     write_indent(g, b)
     fmt.sbprintf(b, "if %s {{\n", condition)
@@ -763,6 +823,11 @@ gen_if_block :: proc(g: ^Generator, ib: ast.If_Block, b: ^strings.Builder) {
         ei_cond := resolve_expr(g, else_if.condition)
         fmt.sbprintf(b, "}} else if %s {{\n", ei_cond)
         g.indent += 1
+        // Hydration else-if marker
+        if g.hydration {
+            write_indent(g, b)
+            strings.write_string(b, "io.write_string(w, \"<!--[!-->\")\n")
+        }
         push_scope(g)
         gen_nodes(g, else_if.children[:], b)
         pop_scope(g)
@@ -773,6 +838,11 @@ gen_if_block :: proc(g: ^Generator, ib: ast.If_Block, b: ^strings.Builder) {
         write_indent(g, b)
         strings.write_string(b, "} else {\n")
         g.indent += 1
+        // Hydration else marker
+        if g.hydration {
+            write_indent(g, b)
+            strings.write_string(b, "io.write_string(w, \"<!--[!-->\")\n")
+        }
         push_scope(g)
         gen_nodes(g, else_body[:], b)
         pop_scope(g)
@@ -781,11 +851,23 @@ gen_if_block :: proc(g: ^Generator, ib: ast.If_Block, b: ^strings.Builder) {
 
     write_indent(g, b)
     strings.write_string(b, "}\n")
+
+    // Hydration closing marker
+    if g.hydration {
+        write_indent(g, b)
+        strings.write_string(b, "io.write_string(w, \"<!--]-->\")\n")
+    }
 }
 
 // ─── each block ───────────────────────────────────────────────────────────────
 
 gen_each_block :: proc(g: ^Generator, eb: ast.Each_Block, b: ^strings.Builder) {
+    // Hydration opening marker
+    if g.hydration {
+        write_indent(g, b)
+        strings.write_string(b, "io.write_string(w, \"<!--[-->\")\n")
+    }
+
     iterable := resolve_expr(g, eb.iterable)
 
     if else_body, ok := eb.else_body.?; ok {
@@ -798,6 +880,11 @@ gen_each_block :: proc(g: ^Generator, eb: ast.Each_Block, b: ^strings.Builder) {
         write_indent(g, b)
         strings.write_string(b, "} else {\n")
         g.indent += 1
+        // Hydration else marker
+        if g.hydration {
+            write_indent(g, b)
+            strings.write_string(b, "io.write_string(w, \"<!--[!-->\")\n")
+        }
         push_scope(g)
         gen_nodes(g, else_body[:], b)
         pop_scope(g)
@@ -806,6 +893,12 @@ gen_each_block :: proc(g: ^Generator, eb: ast.Each_Block, b: ^strings.Builder) {
         strings.write_string(b, "}\n")
     } else {
         gen_each_loop(g, eb, iterable, b)
+    }
+
+    // Hydration closing marker
+    if g.hydration {
+        write_indent(g, b)
+        strings.write_string(b, "io.write_string(w, \"<!--]-->\")\n")
     }
 }
 
@@ -891,6 +984,14 @@ gen_render_call :: proc(g: ^Generator, rc: ast.Render_Call, b: ^strings.Builder)
             strings.write_string(b, content)
             return
         }
+    }
+
+    // <svelte:head> injection: emit pre-generated head content into app.html's <head>.
+    if name == "__svelte_head__" {
+        if content, ok := g.svelte_head_content.?; ok {
+            strings.write_string(b, content)
+        }
+        return
     }
 
     g.need_rt = true
@@ -1229,7 +1330,7 @@ get_root_name :: proc(expr: string) -> string {
 //
 // The result is equivalent to:
 //   layout[0] wraps (layout[1] wraps (... wraps page_content))
-gen_layout_inlined :: proc(g: ^Generator, page_nodes: []ast.Node, layout_chain: []ast.Document, b: ^strings.Builder) {
+gen_layout_inlined :: proc(g: ^Generator, page_nodes: []ast.Node, layout_chain: []ast.Document, svelte_head_nodes: []ast.Node, b: ^strings.Builder) {
     if len(layout_chain) == 0 {
         gen_nodes(g, page_nodes, b)
         return
@@ -1240,6 +1341,14 @@ gen_layout_inlined :: proc(g: ^Generator, page_nodes: []ast.Node, layout_chain: 
     strings.builder_init(&page_buf)
     gen_nodes(g, page_nodes, &page_buf)
     inner_content := strings.to_string(page_buf)
+
+    // Step 1b: Generate <svelte:head> content so it can be injected into app.html's <head>
+    if len(svelte_head_nodes) > 0 {
+        head_buf := strings.Builder{}
+        strings.builder_init(&head_buf)
+        gen_nodes(g, svelte_head_nodes, &head_buf)
+        g.svelte_head_content = strings.to_string(head_buf)
+    }
 
     // Step 2: Wrap with each layout from innermost to outermost
     // We iterate the chain in reverse so that we progressively wrap inner content
@@ -1264,6 +1373,9 @@ gen_layout_inlined :: proc(g: ^Generator, page_nodes: []ast.Node, layout_chain: 
 
     // Step 3: Write the final wrapped content
     strings.write_string(b, inner_content)
+
+    // Clean up
+    g.svelte_head_content = nil
 }
 
 // ─── script helpers ──────────────────────────────────────────────────────────
@@ -1308,4 +1420,27 @@ extract_extra_defs :: proc(raw: string) -> string {
     }
 
     return strings.trim_space(strings.to_string(result))
+}
+
+// ─── client-only attribute filter ─────────────────────────────────────────────
+
+is_client_only_attr :: proc(name: string, value: ast.Attr_Value = nil) -> bool {
+    // Svelte directives — always client-only regardless of value
+    if strings.has_prefix(name, "on:") { return true }
+    if strings.has_prefix(name, "bind:") { return true }
+    if strings.has_prefix(name, "use:") { return true }
+    if strings.has_prefix(name, "transition:") { return true }
+    if strings.has_prefix(name, "animate:") { return true }
+    if strings.has_prefix(name, "in:") { return true }
+    if strings.has_prefix(name, "out:") { return true }
+    // Standard HTML on* event handlers (onclick, onload, onsubmit, etc.)
+    // Dynamic values are Svelte bindings → strip for SSR.
+    // Static values are plain HTML (e.g. onload="this.media='all'") → preserve.
+    if len(name) > 2 && name[0] == 'o' && name[1] == 'n' && name[2] >= 'a' && name[2] <= 'z' {
+        if _, ok := value.(ast.Static_Value); ok {
+            return false
+        }
+        return true
+    }
+    return false
 }

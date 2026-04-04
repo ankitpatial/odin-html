@@ -63,36 +63,30 @@ resolve :: proc(doc: ^ast.Document, registry: Registry) -> [dynamic]errors.Error
 resolve_node :: proc(node: ast.Node, import_map: map[string]string, registry: Registry, file: string, errs: ^[dynamic]errors.Error) {
     switch n in node {
     case ast.Component:
-        // a. Check its pkg matches an import
+        // Check its pkg matches an import and the component exists in the registry.
+        // For .svelte files, unresolvable components are skipped (client-only).
+        is_svelte := strings.has_suffix(file, ".svelte")
         import_path, pkg_found := import_map[n.pkg]
         if !pkg_found {
-            err := errors.Error{
-                file = file,
-                line = n.pos.line,
-                col  = n.pos.col,
-                msg  = fmt.tprintf("component package %q is not imported", n.pkg),
+            if !is_svelte {
+                append(errs, errors.Error{
+                    file = file, line = n.pos.line, col = n.pos.col,
+                    msg = fmt.tprintf("component package %q is not imported", n.pkg),
+                })
             }
-            append(errs, err)
         } else {
-            // b. Check component name exists in registry for that import path
             if comp_set, path_found := registry.components[import_path]; path_found {
-                if !comp_set[n.name] {
-                    err := errors.Error{
-                        file = file,
-                        line = n.pos.line,
-                        col  = n.pos.col,
-                        msg  = fmt.tprintf("component %q not found in package %q", n.name, import_path),
-                    }
-                    append(errs, err)
+                if !comp_set[n.name] && !is_svelte {
+                    append(errs, errors.Error{
+                        file = file, line = n.pos.line, col = n.pos.col,
+                        msg = fmt.tprintf("component %q not found in package %q", n.name, import_path),
+                    })
                 }
-            } else {
-                err := errors.Error{
-                    file = file,
-                    line = n.pos.line,
-                    col  = n.pos.col,
-                    msg  = fmt.tprintf("component %q not found in package %q", n.name, import_path),
-                }
-                append(errs, err)
+            } else if !is_svelte {
+                append(errs, errors.Error{
+                    file = file, line = n.pos.line, col = n.pos.col,
+                    msg = fmt.tprintf("component %q not found in package %q", n.name, import_path),
+                })
             }
         }
         // Recurse into component children
@@ -184,12 +178,20 @@ resolve_layout_chain :: proc(page_path: string, views_root: string) -> [dynamic]
         }
     }
 
-    // Check each directory for +layout.ohtml.
+    // Check each directory for +layout.ohtml or +layout.svelte.
     // A (group) directory with a layout resets the chain — the group layout
     // replaces all parent layouts (SvelteKit convention).
     for d, i in dirs {
         layout_path := strings.concatenate([]string{d, "/+layout.ohtml"})
+        layout_svelte_path := strings.concatenate([]string{d, "/+layout.svelte"})
+        // Prefer .ohtml; fall back to .svelte
+        found_path: string
         if os.exists(layout_path) {
+            found_path = layout_path
+        } else if os.exists(layout_svelte_path) {
+            found_path = layout_svelte_path
+        }
+        if len(found_path) > 0 {
             // If this directory is a (group), clear prior layouts — group layout replaces parents.
             if i > 0 {
                 base := last_segment(d)
@@ -197,7 +199,7 @@ resolve_layout_chain :: proc(page_path: string, views_root: string) -> [dynamic]
                     clear(&chain)
                 }
             }
-            append(&chain, layout_path)
+            append(&chain, found_path)
         }
     }
 

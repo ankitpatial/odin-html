@@ -4,12 +4,14 @@ package ast
 import "../token"
 
 Document :: struct {
-    file:     string,
-    script:   Maybe(Script_Block),
-    children: [dynamic]Node,
+    file:        string,
+    script:      Maybe(Script_Block),
+    children:    [dynamic]Node,
+    svelte_head: [dynamic]Node, // content from <svelte:head> — injected into <head>
 }
 
 Script_Block :: struct {
+    lang:    string,           // "odin" or "ts"
     imports: [dynamic]Import,
     props:   Maybe(Props_Def),
     raw:     string,
@@ -21,6 +23,12 @@ Import :: struct {
 }
 
 Props_Def :: struct {
+    fields:         [dynamic]Prop_Field,
+    inline_structs: [dynamic]Inline_Struct,
+}
+
+Inline_Struct :: struct {
+    name:   string,
     fields: [dynamic]Prop_Field,
 }
 

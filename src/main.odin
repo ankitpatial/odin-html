@@ -112,12 +112,34 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
 		return 1
 	}
 
-	// 2. Discover all .ohtml files recursively
+	// 1b. Parse app.html as the outermost document wrapper (optional).
+	// SvelteKit uses app.html to provide the HTML document shell (DOCTYPE, <html>,
+	// <head>, <body>). We preprocess its %sveltekit.*% placeholders and parse it
+	// as the outermost layout in the chain.
+	app_doc: Maybe(ast.Document)
+	app_html_src: string // preprocessed source — must survive for AST slice refs
+	{
+		app_path := fmt.tprintf("%s/app.html", src_dir)
+		raw, read_err := os.read_entire_file_from_path(app_path, context.allocator)
+		if read_err == nil {
+			app_html_src = preprocess_app_html(string(raw))
+			delete(raw)
+			doc, parse_err := parser.parse(app_html_src, "app.html")
+			if _, has_err := parse_err.?; has_err {
+				fmt.eprintfln("warning: failed to parse app.html — document wrapper disabled")
+			} else {
+				app_doc = doc
+				fmt.printfln("  parsed app.html as document wrapper")
+			}
+		}
+	}
+
+	// 2. Discover all .ohtml and .svelte files recursively
 	files := discover_ohtml_files(src_dir)
 	defer delete(files)
 
 	if len(files) == 0 {
-		fmt.eprintfln("No .ohtml files found in %s", src_dir)
+		fmt.eprintfln("No .ohtml or .svelte files found in %s", src_dir)
 		return 0
 	}
 
@@ -240,6 +262,11 @@ cmd_generate :: proc(src_dir: string, out_dir: string) -> int {
 			}
 
 			if !is_standalone {
+				// Prepend app.html as outermost wrapper (index 0)
+				if ad, ok := app_doc.?; ok {
+					append(&layout_docs, ad)
+				}
+
 				layout_chain_paths := resolver.resolve_layout_chain(file, src_dir)
 				defer delete(layout_chain_paths)
 
@@ -377,7 +404,7 @@ format_ohtml :: proc(src: string) -> string {
 		trimmed := strings.trim_right(line, " \t")
 
 		// Track script block — don't touch its content
-		if strings.contains(trimmed, "<script>") {
+		if strings.contains(trimmed, "<script>") || strings.contains(trimmed, "<script ") {
 			in_script = true
 		}
 
@@ -482,9 +509,14 @@ walk_dir :: proc(dir: string, result: ^[dynamic]string) {
 	for info in infos {
 		full_path := strings.concatenate({dir, "/", info.name})
 		if info.type == .Directory {
+			// Skip directories that shouldn't be processed
+			if info.name == "node_modules" || info.name == ".svelte-kit" || info.name == "(backend)" {
+				delete(full_path)
+				continue
+			}
 			walk_dir(full_path, result)
 			delete(full_path)
-		} else if strings.has_suffix(info.name, ".ohtml") {
+		} else if strings.has_suffix(info.name, ".ohtml") || strings.has_suffix(info.name, ".svelte") {
 			append(result, full_path)
 		} else {
 			delete(full_path)
@@ -494,14 +526,16 @@ walk_dir :: proc(dir: string, result: ^[dynamic]string) {
 
 // ─── path helpers ─────────────────────────────────────────────────────────────
 
-// is_page_file returns true if the file is a +page.ohtml file.
+// is_page_file returns true if the file is a +page.ohtml or +page.svelte file.
 is_page_file :: proc(path: string) -> bool {
-	return strings.has_suffix(path, "/+page.ohtml") || path == "+page.ohtml"
+	return strings.has_suffix(path, "/+page.ohtml") || path == "+page.ohtml" ||
+	       strings.has_suffix(path, "/+page.svelte") || path == "+page.svelte"
 }
 
-// is_layout_file returns true if the file is a +layout.ohtml file.
+// is_layout_file returns true if the file is a +layout.ohtml or +layout.svelte file.
 is_layout_file :: proc(path: string) -> bool {
-	return strings.has_suffix(path, "/+layout.ohtml") || path == "+layout.ohtml"
+	return strings.has_suffix(path, "/+layout.ohtml") || path == "+layout.ohtml" ||
+	       strings.has_suffix(path, "/+layout.svelte") || path == "+layout.svelte"
 }
 
 // relative_path returns the path of file relative to base_dir.
@@ -706,13 +740,52 @@ compute_pkg_name :: proc(rel: string, src_dir: string) -> string {
 	return strings.to_lower(last_seg)
 }
 
+// preprocess_app_html replaces SvelteKit template placeholders in app.html
+// so it can be parsed as a regular layout document.
+// %sveltekit.body%   → {@render children()} (body insertion point)
+// %sveltekit.head%   → {@render __svelte_head__()} (head content insertion point)
+// %sveltekit.assets%, %sveltekit.nonce%, %sveltekit.env.*% → removed
+preprocess_app_html :: proc(src: string) -> string {
+	b := strings.Builder{}
+	strings.builder_init(&b, 0, len(src) + 64)
+
+	i := 0
+	for i < len(src) {
+		if src[i] == '%' && i + 1 < len(src) {
+			// Look for closing %
+			j := i + 1
+			for j < len(src) && src[j] != '%' {
+				j += 1
+			}
+			if j < len(src) && j > i + 1 {
+				placeholder := src[i + 1:j]
+				if strings.has_prefix(placeholder, "sveltekit.") {
+					key := placeholder[len("sveltekit."):]
+					if key == "body" {
+						strings.write_string(&b, "{@render children()}")
+					} else if key == "head" {
+						strings.write_string(&b, "{@render __svelte_head__()}")
+					}
+					// assets, nonce, env.* — emit nothing
+					i = j + 1
+					continue
+				}
+			}
+		}
+		strings.write_byte(&b, src[i])
+		i += 1
+	}
+
+	return strings.to_string(b)
+}
+
 // page_has_doctype checks whether a page file contains its own <!DOCTYPE declaration.
 // Standalone pages (with DOCTYPE) skip layout inlining.
 page_has_doctype :: proc(file_path: string) -> bool {
 	data, err := os.read_entire_file_from_path(file_path, context.temp_allocator)
 	if err != nil { return false }
 	src := string(data)
-	// Skip the <script lang="odin">...</script> block if present
+	// Skip the <script lang="odin">...</script> or <script lang="ts">...</script> block if present
 	rest := src
 	if idx := strings.index(src, "</script>"); idx >= 0 {
 		rest = src[idx + len("</script>"):]

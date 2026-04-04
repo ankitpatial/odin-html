@@ -166,6 +166,14 @@ lex_doctype :: proc(l: ^Lexer) {
     emit(l, .Doctype, l.src[start:l.pos], line, col)
 }
 
+// is_component_name returns true if the tag name is a component reference:
+// either contains a dot (e.g. "card.Card") or starts with an uppercase letter (e.g. "Badge").
+is_component_name :: proc(name: string) -> bool {
+    if strings.contains(name, ".") { return true }
+    if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' { return true }
+    return false
+}
+
 lex_end_tag :: proc(l: ^Lexer) {
     line := l.line
     col  := l.col
@@ -176,7 +184,7 @@ lex_end_tag :: proc(l: ^Lexer) {
     skip_whitespace(l)
     name_line := l.line; name_col := l.col
     name := read_tag_name(l)
-    if strings.contains(name, ".") {
+    if is_component_name(name) {
         emit(l, .Component_Name, name, name_line, name_col)
     } else {
         emit(l, .Tag_Name, name, name_line, name_col)
@@ -199,7 +207,7 @@ lex_open_tag :: proc(l: ^Lexer) {
     skip_whitespace(l)
     name_line := l.line; name_col := l.col
     name := read_tag_name(l)
-    if strings.contains(name, ".") {
+    if is_component_name(name) {
         emit(l, .Component_Name, name, name_line, name_col)
     } else {
         emit(l, .Tag_Name, name, name_line, name_col)
@@ -239,7 +247,7 @@ is_tag_name_char :: proc(ch: byte) -> bool {
     return (ch >= 'a' && ch <= 'z') ||
            (ch >= 'A' && ch <= 'Z') ||
            (ch >= '0' && ch <= '9') ||
-           ch == '-' || ch == '_' || ch == '.'
+           ch == '-' || ch == '_' || ch == '.' || ch == ':'
 }
 
 // ─── attributes ───────────────────────────────────────────────────────────────
@@ -330,12 +338,20 @@ lex_expr_inline :: proc(l: ^Lexer) {
 lex_script_block :: proc(l: ^Lexer) {
     line := l.line
     col  := l.col
-    // consume everything up to and including '>'
+    // capture the opening tag to detect lang attribute
+    tag_start := l.pos
     for l.pos < len(l.src) {
         ch := advance(l)
         if ch == '>' { break }
     }
-    emit(l, .Script_Open, "<script lang=\"odin\">", line, col)
+    open_tag := l.src[tag_start:l.pos]
+    // Detect language: look for lang="ts" or lang="odin" in the opening tag
+    lang := "odin" // default
+    if strings.contains(open_tag, "lang=\"ts\"") || strings.contains(open_tag, "lang='ts'") {
+        lang = "ts"
+    }
+    open_value := strings.concatenate({"<script lang=\"", lang, "\">"})
+    emit(l, .Script_Open, open_value, line, col)
 
     // content until </script>
     content_line := l.line; content_col := l.col
